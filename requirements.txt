@@ -1,0 +1,11 @@
+#python -m pip install -r requirements.txt
+
+# Interface Gráfica
+customtkinter>=5.2.2
+
+# Segurança e Criptografia
+cryptography>=42.0.5
+bcrypt>=4.1.2
+
+# Automação Web (Robô)
+playwright>=1.42.0
