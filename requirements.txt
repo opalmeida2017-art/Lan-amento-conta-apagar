@@ -1,4 +1,4 @@
-#python -m pip install -r requirements.txt
+# python -m pip install -r requirements.txt
 
 # Interface Gráfica
 customtkinter>=5.2.2
@@ -9,3 +9,9 @@ bcrypt>=4.1.2
 
 # Automação Web (Robô)
 playwright>=1.42.0
+
+# Manipulação de Dados e Planilhas (Robô de Frota)
+pandas>=2.0.0
+openpyxl>=3.1.0
+lxml>=4.9.0
+xlrd>=2.0.1

@@ -6,6 +6,7 @@ import time
 import database_setup as db
 import robo_web.robo_web as robo_web          
 import ui_filtros
+from robo_web import modulo_frota
 
 # Configuração visual do sistema
 ctk.set_appearance_mode("Dark")
@@ -18,12 +19,21 @@ class App(ctk.CTk):
         self.geometry("400x550")
         self.eval('tk::PlaceWindow . center') 
         
+        import database_setup as db
         db.inicializar_banco()
         db.gerar_chave_seguranca()
         db.configurar_usuario_master() 
         
         self.verificar_acesso()
         self.atualizar_tabela_dashboard()
+        
+        # CHAMA O ROBÔ DE FROTA DEPOIS QUE A TELA JÁ ESTIVER ABERTA (Delay de 2 segundos)
+        self.after(2000, self.iniciar_thread_frota)
+
+    def iniciar_thread_frota(self):
+        # ATENÇÃO: NÃO coloque () depois de loop_atualizacao_frota aqui embaixo!
+        thread_frota = threading.Thread(target=loop_atualizacao_frota, daemon=True)
+        thread_frota.start()
 
     def verificar_acesso(self):
         status, dias = db.checar_status_licenca()
@@ -153,9 +163,11 @@ class App(ctk.CTk):
         
         self.sub_tabview.add("Execução e Notas")
         self.sub_tabview.add("Filtros de Data")
+        self.sub_tabview.add("Veículos Ativos")
 
         self.montar_sub_aba_execucao()
         self.montar_sub_aba_filtros()
+        self.montar_sub_aba_veiculos()
 
     def montar_sub_aba_execucao(self):
         aba_exec = self.sub_tabview.tab("Execução e Notas")
@@ -167,25 +179,23 @@ class App(ctk.CTk):
         style.map('Treeview', background=[('selected', '#3b8ed0')])
         style.configure("Treeview.Heading", background="#1f538d", foreground="white", font=('Arial', 10, 'bold'))
 
-        # Frame para a tabela e as barras de rolagem
         frame_tabela = ctk.CTkFrame(aba_exec)
         frame_tabela.pack(pady=10, padx=10, fill="both", expand=True)
 
-        # Novas colunas baseadas no sistema SAT
-        colunas = ("status", "forn", "nota", "data", "valor", "sit_nfe", "chave", "filial", "user")
+        # 1. ATUALIZAMOS A LISTA DE COLUNAS (cod_interno no início e erro no fim)
+        colunas = ("cod_interno", "status", "forn", "nota", "data", "valor", "sit_nfe", "chave", "filial", "user", "erro")
         self.tabela_nf = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=8)
         
-        # --- Barras de Rolagem (Vertical e Horizontal) ---
         scroll_y = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tabela_nf.yview)
         scroll_x = ttk.Scrollbar(frame_tabela, orient="horizontal", command=self.tabela_nf.xview)
         self.tabela_nf.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
 
-        # Posicionando as barras e a tabela na tela
         scroll_x.pack(side="bottom", fill="x")
         scroll_y.pack(side="right", fill="y")
         self.tabela_nf.pack(side="left", fill="both", expand=True)
 
-        # --- Configurando os Títulos das Colunas ---
+        # 2. DEFINIMOS OS CABEÇALHOS
+        self.tabela_nf.heading("cod_interno", text="Cód. Interno")
         self.tabela_nf.heading("status", text="Status")
         self.tabela_nf.heading("forn", text="Fornecedor")
         self.tabela_nf.heading("nota", text="No.Nota")
@@ -195,32 +205,111 @@ class App(ctk.CTk):
         self.tabela_nf.heading("chave", text="Chave NFe")
         self.tabela_nf.heading("filial", text="Filial")
         self.tabela_nf.heading("user", text="Usuário Inserção")
+        self.tabela_nf.heading("erro", text="Erro Importação")
         
-        self.tabela_nf.pack(fill="both", expand=True)
-        self.atualizar_tabela_dashboard()
-        
-        # --- Configurando o tamanho de cada coluna ---
+        # 3. AJUSTAMOS O LARGURA DE CADA COLUNA (Deixei o Fornecedor e Chave um pouco menores para caber o Erro)
+        self.tabela_nf.column("cod_interno", width=90, anchor="center")
         self.tabela_nf.column("status", width=90, anchor="center")
-        self.tabela_nf.column("forn", width=250, anchor="w") # w = alinhado à esquerda
+        self.tabela_nf.column("forn", width=200, anchor="w") 
         self.tabela_nf.column("nota", width=80, anchor="center")
         self.tabela_nf.column("data", width=90, anchor="center")
-        self.tabela_nf.column("valor", width=100, anchor="e") # e = alinhado à direita (dinheiro)
-        self.tabela_nf.column("sit_nfe", width=120, anchor="center")
-        self.tabela_nf.column("chave", width=320, anchor="center")
+        self.tabela_nf.column("valor", width=100, anchor="e") 
+        self.tabela_nf.column("sit_nfe", width=100, anchor="center")
+        self.tabela_nf.column("chave", width=260, anchor="center")
         self.tabela_nf.column("filial", width=80, anchor="center")
-        self.tabela_nf.column("user", width=120, anchor="center")
+        self.tabela_nf.column("user", width=110, anchor="center")
+        self.tabela_nf.column("erro", width=380, anchor="w") # Aumentado para 380px para caber o texto
 
+        self.atualizar_tabela_dashboard()
+        
+        # LIGA O EVENTO DE DUPLO CLIQUE DO MOUSE NA TABELA
+        self.tabela_nf.bind("<Double-1>", self.evento_clique_tabela)
         # --- BOTÃO INICIAR ---
         self.btn_iniciar_robo = ctk.CTkButton(aba_exec, text="▶ INICIAR AUTOMAÇÃO", font=("Arial", 16, "bold"), 
                                               fg_color="#8b0000", hover_color="#ff0000", height=45,
                                               command=self.chamar_robo_em_background)
         self.btn_iniciar_robo.pack(pady=15)
-
+        
     def montar_sub_aba_filtros(self):
         aba_filt = self.sub_tabview.tab("Filtros de Data")
         self.painel_de_filtros = ui_filtros.PainelFiltros(aba_filt)
         self.painel_de_filtros.pack(fill="both", expand=True)
+        
+ 
+    # ==========================================
+    # NOVA ABA: VEÍCULOS ATIVOS
+    # ==========================================
+    def montar_sub_aba_veiculos(self):
+        aba_veic = self.sub_tabview.tab("Veículos Ativos")
 
+        lbl_titulo = ctk.CTkLabel(aba_veic, text="Relação de Veículos Cadastrados no Banco", font=("Arial", 16, "bold"))
+        lbl_titulo.pack(pady=(10, 5))
+
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Treeview", background="#2b2b2b", foreground="white", rowheight=25, fieldbackground="#2b2b2b", borderwidth=0)
+        style.map('Treeview', background=[('selected', '#3b8ed0')])
+        style.configure("Treeview.Heading", background="#1f538d", foreground="white", font=('Arial', 10, 'bold'))
+
+        frame_tabela = ctk.CTkFrame(aba_veic)
+        frame_tabela.pack(pady=10, padx=10, fill="both", expand=True)
+
+        # 1. NOMES INTERNOS DAS COLUNAS AJUSTADOS
+        colunas = ("codigo", "placa", "tipo", "atualizacao")
+        self.tabela_veiculos = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=10)
+        
+        scroll_y = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tabela_veiculos.yview)
+        scroll_x = ttk.Scrollbar(frame_tabela, orient="horizontal", command=self.tabela_veiculos.xview)
+        self.tabela_veiculos.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+
+        scroll_x.pack(side="bottom", fill="x")
+        scroll_y.pack(side="right", fill="y")
+        self.tabela_veiculos.pack(side="left", fill="both", expand=True)
+
+        # 2. CABEÇALHOS (O texto que aparece em azul na tela)
+        self.tabela_veiculos.heading("codigo", text="Cód. Veículo")
+        self.tabela_veiculos.heading("placa", text="Placa")
+        self.tabela_veiculos.heading("tipo", text="Tipo (Vínculo)")
+        self.tabela_veiculos.heading("atualizacao", text="Última Atualização")
+        
+        # 3. LARGURA DAS COLUNAS
+        self.tabela_veiculos.column("codigo", width=100, anchor="center")
+        self.tabela_veiculos.column("placa", width=120, anchor="center")
+        self.tabela_veiculos.column("tipo", width=200, anchor="w")
+        self.tabela_veiculos.column("atualizacao", width=160, anchor="center")
+
+        btn_atualizar = ctk.CTkButton(aba_veic, text="Atualizar Lista", font=("Arial", 12, "bold"), 
+                                      command=self.atualizar_tabela_veiculos)
+        btn_atualizar.pack(pady=10)
+
+        self.atualizar_tabela_veiculos()
+
+    def atualizar_tabela_veiculos(self):
+        """Busca os veículos no banco de dados da frota e preenche a tabela visual"""
+        for item in self.tabela_veiculos.get_children():
+            self.tabela_veiculos.delete(item)
+            
+        import sqlite3
+        try:
+            conn = sqlite3.connect('sistema_automacao.db')
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 4. ORDEM DA BUSCA CORRIGIDA (Primeiro o Código, depois a Placa...)
+            cursor.execute("SELECT codVeiculo, placa, veiculoProprio, ultima_atualizacao FROM frota_erp ORDER BY codVeiculo ASC")
+            veiculos_db = cursor.fetchall()
+            
+            # 5. INSERINDO OS DADOS NA ORDEM CORRETA DA TABELA
+            for v in veiculos_db:
+                self.tabela_veiculos.insert("", "end", values=(
+                    v['codVeiculo'],        # Aparece na 1ª coluna (Cód. Veículo)
+                    v['placa'],             # Aparece na 2ª coluna (Placa)
+                    v['veiculoProprio'],    # Aparece na 3ª coluna (Tipo)
+                    v['ultima_atualizacao'] # Aparece na 4ª coluna (Atualização)
+                ))
+            conn.close()
+        except Exception as e:
+            print(f"Aguardando primeira leitura de frota... ({e})")
     # ==========================================
     # ABA DE CONFIGURAÇÕES (Com Validação)
     # ==========================================
@@ -305,25 +394,65 @@ class App(ctk.CTk):
         thread_robo.start()
     
     def atualizar_tabela_dashboard(self):
-        # 1. VERIFICAÇÃO DE SEGURANÇA: Só tenta atualizar se a tabela já existir na tela
         if not hasattr(self, 'tabela_nf'):
             return
 
-        # 2. Limpa todas as linhas antigas da tela
         for item in self.tabela_nf.get_children():
             self.tabela_nf.delete(item)
             
-        # 3. Busca as notas reais do banco de dados
         import database_setup as db
         notas = db.listar_todas_notas()
         
-        # 4. Preenche a tabela com os dados reais
+        # 4. INSERIMOS OS VALORES NA ORDEM CORRETA
         for nota in notas:
+            # Função auxiliar para garantir que valores None virem string vazia
+            def limpa_none(valor):
+                return "" if valor is None else str(valor)
+
             self.tabela_nf.insert("", "end", values=(
-                nota.get('status', ''), nota.get('fornecedor', ''), nota.get('num_nota', ''), 
-                nota.get('data_em', ''), nota.get('valor', ''), nota.get('sit_nfe', ''), 
-                nota.get('chave_nfe', ''), nota.get('filial', ''), nota.get('user_ins', '')
+                limpa_none(nota.get('codigo_interno')),   
+                limpa_none(nota.get('status')), 
+                limpa_none(nota.get('fornecedor')), 
+                limpa_none(nota.get('num_nota')), 
+                limpa_none(nota.get('data_em')), 
+                limpa_none(nota.get('valor')), 
+                limpa_none(nota.get('sit_nfe')), 
+                limpa_none(nota.get('chave_nfe')), 
+                limpa_none(nota.get('filial')), 
+                limpa_none(nota.get('user_ins')),
+                limpa_none(nota.get('erro_importacao'))   
             ))
+            
+    def evento_clique_tabela(self, event):
+        """Função disparada quando o usuário dá um duplo clique na tabela"""
+        # Identifica a linha e a coluna clicada
+        item_id = self.tabela_nf.identify_row(event.y)
+        coluna_id = self.tabela_nf.identify_column(event.x)
+        
+        if not item_id:
+            return
+
+        # Pega todos os valores da linha clicada
+        valores = self.tabela_nf.item(item_id, "values")
+        cod_interno = valores[0]
+        erro_msg = valores[10]
+        
+        # SE CLICOU NA COLUNA 1 (Código Interno) "#1"
+        if coluna_id == "#1" and cod_interno:
+            # Copia o código para a área de transferência do Windows
+            self.clipboard_clear()
+            self.clipboard_append(cod_interno)
+            messagebox.showinfo("Copiado!", f"O Código Interno '{cod_interno}' foi copiado!\n\nVocê pode apertar CTRL+V no sistema ERP para pesquisar a conta a pagar.")
+            
+            # NOTA: Se você souber a URL fixa do sistema, você poderia importar a biblioteca 'webbrowser' 
+            # e fazer o Python abrir o link direto assim:
+            # import webbrowser
+            # webbrowser.open(f"https://sat1b.intersite.com.br/sua_pagina_conta_pagar?id={cod_interno}")
+
+        # SE CLICOU NA COLUNA 11 (Erro) "#11"
+        elif coluna_id == "#11" and erro_msg:
+            # Abre um popup mostrando o texto completo do erro
+            messagebox.showwarning("Detalhes do Erro", f"Mensagem completa registrada:\n\n{erro_msg}")        
     
     def executar_robo_playwright(self):
         # 1. LÊ OS FILTROS SALVOS NO BANCO DE DADOS ANTES DE INICIAR
@@ -387,6 +516,18 @@ class App(ctk.CTk):
             
     def restaurar_botao_robo(self):
         self.btn_iniciar_robo.configure(state="normal", text="▶ INICIAR AUTOMAÇÃO", fg_color="#8b0000")
+import threading
+import time
+from robo_web import modulo_frota
+        
+def loop_atualizacao_frota():
+    """Roda invisível a cada 1 hora sem travar a tela"""
+    while True:
+        try:
+            modulo_frota.baixar_e_importar_frota()
+        except Exception as e:
+            print(f"Erro na Thread de Frota: {e}")
+        time.sleep(3600) # Dorme por 1 hora
 
 if __name__ == "__main__":
     app = App()

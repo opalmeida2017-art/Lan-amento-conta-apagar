@@ -59,14 +59,35 @@ def inicializar_banco():
     cursor.execute('''CREATE TABLE IF NOT EXISTS Notas_Fiscais (
         id INTEGER PRIMARY KEY AUTOINCREMENT, numero_nf TEXT, status TEXT DEFAULT 'Pendente', data_registro DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
-    # NOVAS TABELAS PARA A AUTOMAÇÃO DO SAT
     cursor.execute('''CREATE TABLE IF NOT EXISTS filtros_salvos (
         id INTEGER PRIMARY KEY, mes TEXT, ano TEXT)''')
         
+    # TABELA ATUALIZADA COM AS DUAS NOVAS COLUNAS
     cursor.execute('''CREATE TABLE IF NOT EXISTS notas_raspadas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT, fornecedor TEXT, num_nota TEXT, data_em TEXT,
-        valor TEXT, sit_nfe TEXT, chave_nfe TEXT, filial TEXT, user_ins TEXT)''')
+        valor TEXT, sit_nfe TEXT, chave_nfe TEXT, filial TEXT, user_ins TEXT,
+        codigo_interno TEXT, erro_importacao TEXT)''')
 
+    # TRUQUE PARA ATUALIZAR O BANCO ANTIGO (Evita quebrar se o banco já existir)
+    try:
+        cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN codigo_interno TEXT")
+    except sqlite3.OperationalError:
+        pass # Se der erro, é porque a coluna já existe
+        
+    try:
+        cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN erro_importacao TEXT")
+    except sqlite3.OperationalError:
+        pass # Se der erro, é porque a coluna já existe
+    
+    # Criação da tabela oficial da Frota
+    cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
+        codVeiculo INTEGER PRIMARY KEY, 
+        placa TEXT UNIQUE, 
+        veiculoProprio TEXT,
+        ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # Salva e SÓ AGORA fecha o banco!
     conn.commit()
     conn.close()
 
@@ -267,18 +288,42 @@ def salvar_nota_raspada(dados_nota):
             return False
 
         cursor.execute('''
-            INSERT INTO notas_raspadas (status, fornecedor, num_nota, data_em, valor, sit_nfe, chave_nfe, filial, user_ins)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notas_raspadas (status, fornecedor, num_nota, data_em, valor, sit_nfe, chave_nfe, filial, user_ins, codigo_interno, erro_importacao)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            dados_nota['status'], dados_nota['fornecedor'], dados_nota['num_nota'], 
-            dados_nota['data_em'], dados_nota['valor'], dados_nota['sit_nfe'], 
-            dados_nota['chave_nfe'], dados_nota['filial'], dados_nota['user_ins']
+            dados_nota.get('status', ''), dados_nota.get('fornecedor', ''), dados_nota.get('num_nota', ''), 
+            dados_nota.get('data_em', ''), dados_nota.get('valor', ''), dados_nota.get('sit_nfe', ''), 
+            dados_nota.get('chave_nfe', ''), dados_nota.get('filial', ''), dados_nota.get('user_ins', ''),
+            dados_nota.get('codigo_interno', ''), dados_nota.get('erro_importacao', '')
         ))
         conn.commit()
         conn.close()
         return True
     except Exception as e:
         print(f"Erro ao salvar nota no banco: {e}")
+        return False
+
+# ESTA FUNÇÃO É NOVA E É ELA QUE O ROBÔ VAI CHAMAR QUANDO DER ERRO OU SUCESSO!
+def atualizar_nota_raspada(dados_nota):
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE notas_raspadas 
+            SET status = ?, codigo_interno = ?, erro_importacao = ?
+            WHERE chave_nfe = ?
+        ''', (
+            dados_nota.get('status', ''),
+            dados_nota.get('codigo_interno', ''),
+            dados_nota.get('erro_importacao', ''),
+            dados_nota.get('chave_nfe', '')
+        ))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao atualizar nota: {e}")
         return False
 
 def listar_todas_notas():
@@ -349,3 +394,85 @@ def salvar_modelos_placa(modelos_str):
 def obter_modelos_placa_string():
     modelos = obter_modelos_placa() 
     return ", ".join(modelos)
+# =======================================================
+# FUNÇÕES PARA CONFIGURAÇÃO DOS MODELOS DE KM
+# =======================================================
+def criar_tabela_config_km():
+    conn = sqlite3.connect('banco_nfe.db') 
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS config_km (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            modelo TEXT NOT NULL
+        )
+    ''')
+    c.execute('SELECT count(*) FROM config_km')
+    if c.fetchone()[0] == 0:
+        padroes = ["KM: 1", "KM 1", "HIDROMETRO: 1", "ODO: 1"]
+        for p in padroes:
+            c.execute('INSERT INTO config_km (modelo) VALUES (?)', (p,))
+    conn.commit()
+    conn.close()
+
+def obter_modelos_km():
+    criar_tabela_config_km()
+    try:
+        conn = sqlite3.connect('banco_nfe.db')
+        c = conn.cursor()
+        c.execute('SELECT modelo FROM config_km')
+        resultados = c.fetchall()
+        conn.close()
+        return [r[0] for r in resultados]
+    except:
+        return []
+
+def salvar_modelos_km(modelos_str):
+    criar_tabela_config_km()
+    conn = sqlite3.connect('banco_nfe.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM config_km') 
+    
+    modelos = [m.strip() for m in modelos_str.split(',') if m.strip()]
+    for m in modelos:
+        c.execute('INSERT INTO config_km (modelo) VALUES (?)', (m,))
+        
+    conn.commit()
+    conn.close()
+
+def obter_modelos_km_string():
+    modelos = obter_modelos_km() 
+    return ", ".join(modelos)
+
+def sincronizar_frota_erp(lista_veiculos):
+    import sqlite3
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        cursor = conn.cursor()
+        
+        # =======================================================
+        # GARANTIA ABSOLUTA: Cria a tabela aqui mesmo se ela não existir!
+        # =======================================================
+        cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
+            codVeiculo INTEGER PRIMARY KEY, 
+            placa TEXT UNIQUE, 
+            veiculoProprio TEXT,
+            ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        # Agora salva os veículos
+        for v in lista_veiculos:
+            cursor.execute('''
+                INSERT INTO frota_erp (codVeiculo, placa, veiculoProprio, ultima_atualizacao)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(placa) DO UPDATE SET
+                codVeiculo=excluded.codVeiculo,
+                veiculoProprio=excluded.veiculoProprio,
+                ultima_atualizacao=CURRENT_TIMESTAMP
+            ''', (v.get('codVeiculo'), str(v.get('placa')).strip(), str(v.get('veiculoProprio')).strip()))
+            
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao salvar frota no banco: {e}")
+        return False
