@@ -8,7 +8,7 @@ def processar_veiculo(page, log, idx, memoria_obs, modelos_usuario):
     
     if valor_v and "SEM DADOS" not in valor_v.upper():
         log(f"-> Veículo já identificado na tela: {valor_v}")
-        return True
+        return valor_v # Retorna a string do veículo em vez de True
 
     log("-> Veículo vazio. Lendo observação com os modelos do banco de dados...")
     placas_encontradas = []
@@ -46,6 +46,6 @@ def processar_veiculo(page, log, idx, memoria_obs, modelos_usuario):
             campo_veiculo.clear()
         else:
             log(f"-> ✅ SUCESSO! Veículo validado pelo sistema: {valor_atual_veiculo}")
-            return True 
+            return valor_atual_veiculo # Retorna a string do veículo em vez de True
 
     return False

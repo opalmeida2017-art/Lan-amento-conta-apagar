@@ -1,0 +1,111 @@
+import time
+import os
+from datetime import datetime
+import pandas as pd
+from playwright.sync_api import sync_playwright
+import database_setup as db
+
+def baixar_e_importar_itens():
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Iniciando robô de sincronização de Itens (Relatório 118)...")
+    
+    config = db.carregar_configuracoes()
+    if not config or not config['link']:
+        print("❌ Sistema não configurado. Impossível baixar itens.")
+        return
+
+    pasta_downloads = os.path.abspath("downloads_erp")
+    os.makedirs(pasta_downloads, exist_ok=True)
+    
+    with sync_playwright() as p:
+        # Modo invisível (headless=True)
+        browser = p.chromium.launch(headless=True, channel="chrome")
+        context = browser.new_context(accept_downloads=True)
+        page = context.new_page()
+        
+        try:
+            # 1. LOGIN
+            print(" -> Fazendo login no ERP...")
+            page.goto(config['link'])
+            page.wait_for_load_state("load")
+            page.locator('input[type="text"]').first.fill(config['user_sis'])
+            page.locator('input[type="password"]').first.fill(config['senha_sis'])
+            page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click()
+            page.wait_for_load_state("networkidle")
+            
+            # 2. NAVEGAÇÃO PARA EXPORTAÇÕES
+            print(" -> Acessando módulo de Exportações...")
+            page.locator('text="Exp./Imp."').first.click()
+            time.sleep(1)
+            page.locator('text="Cadastro de Exportações"').first.click()
+            page.wait_for_load_state("networkidle")
+            
+            # 3. BUSCANDO RELATÓRIO 118 (ITENS)
+            print(" -> Pesquisando relatório 118...")
+            campo_codigo = page.locator('text=Código:').locator('xpath=./following::input[1]')
+            campo_codigo.fill("118")
+            page.locator('img[src*="search"], img[src*="lupa"], input[type="image"]').first.click()
+            
+            page.wait_for_selector("td:has-text('118')", timeout=15000)
+            # Clica no link de detalhe/edição do relatório 118
+            link_resultado = page.locator("td:has-text('118')").locator("xpath=./following-sibling::td[1]").locator("a")
+            link_resultado.evaluate("node => node.click()")
+            page.wait_for_load_state("networkidle")
+            
+            # 4. ABRINDO A TELA DE EXPORTAÇÃO
+            with context.expect_page() as new_page_info:
+                page.locator('text="Exportar Dados"').evaluate("node => node.click()")
+            nova_aba = new_page_info.value
+            nova_aba.wait_for_load_state("networkidle")
+            
+            # Clica no link gerado pelo sistema SAT
+            nova_aba.locator('text="### Link para exportação ###"').first.evaluate("node => node.click()")
+            nova_aba.wait_for_load_state("networkidle")
+            time.sleep(2)
+            
+            # 5. GERANDO E BAIXANDO (Itens geralmente não precisam de filtros de data)
+            print(" -> Solicitando geração do arquivo de itens...")
+            # Clica no botão Filtrar/Gerar da tela 118
+            btn_gerar = nova_aba.locator('input[id*="filtrar"], input[value="Gerar"], input[value="Filtrar"]').first
+            btn_gerar.click(force=True, no_wait_after=True)
+            
+            # Aguarda o link de download aparecer
+            selector_link = nova_aba.get_by_text("Clique aqui para visualizar arquivo", exact=False)
+            selector_link.wait_for(state="visible", timeout=90000)
+            
+            caminho_arquivo = os.path.join(pasta_downloads, "itemDFil.xls")
+            if os.path.exists(caminho_arquivo):
+                os.remove(caminho_arquivo)
+            
+            with nova_aba.expect_download(timeout=60000) as download_info:
+                selector_link.click()
+            download_info.value.save_as(caminho_arquivo)
+            print(" ✅ Download do Relatório 118 concluído!")
+            
+            # 6. PROCESSAMENTO COM PANDAS
+            print(" -> Lendo a planilha de Itens e atualizando o banco de dados...")
+            try:
+                # Tenta ler como HTML primeiro (comum no JSF)
+                df = pd.read_html(caminho_arquivo)[0]
+            except Exception:
+                # Se falhar, tenta Excel nativo
+                df = pd.read_excel(caminho_arquivo)
+                
+            # Limpa valores e foca na coluna do código do item
+            df = df.dropna(subset=['codItemD']) 
+            df = df.fillna("") # Remove NaNs para não dar erro no banco
+            
+            lista_itens = df.to_dict('records')
+            
+            # 7. SINCRONIZAÇÃO COM O BANCO LOCAL
+            # Chama a função que criamos anteriormente no database_setup.py
+            sucesso = db.sincronizar_itens_erp(lista_itens)
+            
+            if sucesso:
+                print(f" 🌟 SUCESSO! {len(lista_itens)} itens sincronizados com o banco local.")
+            else:
+                print(" ❌ Falha ao salvar os itens no banco SQLite.")
+                
+        except Exception as e:
+            print(f"❌ ERRO GERAL NO MÓDULO DE ITENS: {e}")
+        finally:
+            browser.close()

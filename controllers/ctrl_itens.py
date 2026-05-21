@@ -1,0 +1,57 @@
+import database_setup as db
+import threading
+from robo_web import modulo_migracao
+
+class ItensController:
+    def __init__(self):
+        self.view = None
+
+    def obter_grupos_unicos(self):
+        itens = db.obter_itens_erp()
+        grupos = set()
+        for i in itens:
+            grupo = str(i.get('descGrupoImp', '')).strip()
+            if grupo: grupos.add(grupo)
+        return ["Todos"] + sorted(list(grupos))
+
+    def obter_itens_filtrados(self, cod="", grupo="Todos", descricao=""):
+        itens = db.obter_itens_erp()
+        filtrados = []
+        cod = cod.lower().strip()
+        descricao = descricao.lower().strip()
+        
+        for i in itens:
+            val_cod = str(i.get('codItemD', '')).lower()
+            val_grupo = str(i.get('descGrupoImp', '')).strip()
+            val_desc = str(i.get('descricao', '')).lower()
+            
+            if cod and cod not in val_cod: continue
+            if grupo != "Todos" and grupo.lower() != val_grupo.lower(): continue
+            if descricao and descricao not in val_desc: continue
+            filtrados.append(i)
+            
+        return filtrados
+
+    # ==========================================
+    # LÓGICA DE MIGRAÇÃO COM O ROBÔ
+    # ==========================================
+    def iniciar_migracao_lote(self, itens_codigos, novo_grupo_nome, popup_atualizar_status, grupo_atual="Filtrado"):
+        """Prepara os dados e dispara a Thread do robô de migração"""
+        config = db.carregar_configuracoes()
+        if not config or not config.get('link'):
+            popup_atualizar_status("❌ Configure o acesso ao ERP primeiro.")
+            return
+
+        def rodar():
+            # Chama o script do Playwright que criamos, agora passando o grupo_atual
+            modulo_migracao.iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, popup_atualizar_status, grupo_atual)
+            
+            # No final, manda a tela original atualizar a tabela sozinha
+            if self.view:
+                try:
+                    self.view.after(0, self.view.atualizar_tabela)
+                except Exception:
+                    pass
+                
+        # Inicia numa Thread para não travar a interface!
+        threading.Thread(target=rodar, daemon=True).start()

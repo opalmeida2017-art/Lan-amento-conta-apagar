@@ -7,69 +7,79 @@ class PainelFiltros(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
 
-        ctk.CTkLabel(self, text="Configurações de Busca e Importação:", font=("Arial", 16, "bold")).pack(pady=(20, 20))
+        # Configura as 3 colunas para terem o mesmo tamanho
+        self.grid_columnconfigure((0, 1, 2), weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(self, text="Configurações de Busca e Importação:", font=("Arial", 16, "bold")).grid(row=0, column=0, columnspan=3, pady=(20, 10))
 
         # ==========================================
-        # SEÇÃO DE MÊS (COMBOBOX)
+        # COLUNA 1: FILTROS DE DATA
         # ==========================================
-        frame_mes = ctk.CTkFrame(self, fg_color="transparent")
-        frame_mes.pack(pady=5, padx=20, fill="x")
+        frame_data = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        frame_data.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
         
-        ctk.CTkLabel(frame_mes, text="📅 Mês:", font=("Arial", 14, "bold"), width=100, anchor="e").pack(side="left", padx=(10, 20))
+        ctk.CTkLabel(frame_data, text="📅 Período", font=("Arial", 14, "bold")).pack(pady=(15, 10))
         
         self.meses_nomes = [
             "01 - Janeiro", "02 - Fevereiro", "03 - Março", "04 - Abril", 
             "05 - Maio", "06 - Junho", "07 - Julho", "08 - Agosto", 
             "09 - Setembro", "10 - Outubro", "11 - Novembro", "12 - Dezembro"
         ]
-        
-        self.combo_mes = ctk.CTkComboBox(frame_mes, values=self.meses_nomes, width=250, state="readonly")
-        self.combo_mes.pack(side="left")
+        ctk.CTkLabel(frame_data, text="Mês:").pack()
+        self.combo_mes = ctk.CTkComboBox(frame_data, values=self.meses_nomes, width=200, state="readonly")
+        self.combo_mes.pack(pady=5, padx=20)
 
-        # ==========================================
-        # SEÇÃO DE ANO (COMBOBOX)
-        # ==========================================
-        frame_ano = ctk.CTkFrame(self, fg_color="transparent")
-        frame_ano.pack(pady=5, padx=20, fill="x")
-        
-        ctk.CTkLabel(frame_ano, text="📆 Ano:", font=("Arial", 14, "bold"), width=100, anchor="e").pack(side="left", padx=(10, 20))
-        
         self.anos_lista = ["2023", "2024", "2025", "2026", "2027", "2028"]
+        ctk.CTkLabel(frame_data, text="Ano:").pack()
+        self.combo_ano = ctk.CTkComboBox(frame_data, values=self.anos_lista, width=200, state="readonly")
+        self.combo_ano.pack(pady=5, padx=20)
+
+        # ==========================================
+        # COLUNA 2: MODELOS DE LEITURA
+        # ==========================================
+        frame_leitura = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        frame_leitura.grid(row=1, column=1, padx=10, pady=5, sticky="nsew")
+
+        ctk.CTkLabel(frame_leitura, text="🔍 Placa e KM", font=("Arial", 14, "bold")).pack(pady=(15, 10))
+
+        ctk.CTkLabel(frame_leitura, text="Modelos de Placa:").pack()
+        self.entry_placas = ctk.CTkEntry(frame_leitura, width=220, placeholder_text="Ex: PLACA: AAA-1A11")
+        self.entry_placas.pack(pady=5, padx=20)
+
+        ctk.CTkLabel(frame_leitura, text="Modelos de KM:").pack()
+        self.entry_km = ctk.CTkEntry(frame_leitura, width=220, placeholder_text="Ex: KM: 1, ODO 1")
+        self.entry_km.pack(pady=5, padx=20)
+
+        # ==========================================
+        # COLUNA 3: CÓDIGOS ERP (NOVO)
+        # ==========================================
+        frame_codigos = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        frame_codigos.grid(row=1, column=2, padx=10, pady=5, sticky="nsew")
+
+        ctk.CTkLabel(frame_codigos, text="⛽ Códigos Combustível", font=("Arial", 14, "bold")).pack(pady=(15, 5))
+
+        self.entry_etanol = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. Etanol")
+        self.entry_etanol.pack(pady=4)
         
-        self.combo_ano = ctk.CTkComboBox(frame_ano, values=self.anos_lista, width=150, state="readonly")
-        self.combo_ano.pack(side="left")
-
-        # ==========================================
-        # SEÇÃO DE MODELOS DE PLACA (NOVO)
-        # ==========================================
-        frame_placa = ctk.CTkFrame(self, fg_color="transparent")
-        frame_placa.pack(pady=5, padx=20, fill="x")
-
-        ctk.CTkLabel(frame_placa, text="🚗 Placas:", font=("Arial", 14, "bold"), width=100, anchor="e").pack(side="left", padx=(10, 20))
-
-        # Campo de entrada para os modelos separados por vírgula
-        self.entry_placas = ctk.CTkEntry(frame_placa, width=450, placeholder_text="Ex: PLACA: AAA-1A11, PLAC: AAA 1A11, PLACA: AAA1A11")
-        self.entry_placas.pack(side="left")
+        self.entry_gasolina = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. Gasolina")
+        self.entry_gasolina.pack(pady=4)
         
-        # ==========================================
-        # SEÇÃO DE MODELOS DE KM (NOVO)
-        # ==========================================
-        frame_km = ctk.CTkFrame(self, fg_color="transparent")
-        frame_km.pack(pady=5, padx=20, fill="x")
-
-        ctk.CTkLabel(frame_km, text="🛣️ KM:", font=("Arial", 14, "bold"), width=100, anchor="e").pack(side="left", padx=(10, 20))
-
-        # Campo de entrada para os modelos de KM separados por vírgula
-        self.entry_km = ctk.CTkEntry(frame_km, width=450, placeholder_text="Ex: KM: 1, HIDRO: 1, ODO 1")
-        self.entry_km.pack(side="left")
+        self.entry_s10 = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. Diesel S10")
+        self.entry_s10.pack(pady=4)
+        
+        self.entry_s500 = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. Diesel S500")
+        self.entry_s500.pack(pady=4)
+        
+        self.entry_arla = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. ARLA 32")
+        self.entry_arla.pack(pady=4)
 
         # ==========================================
         # BOTÃO SALVAR
         # ==========================================
         self.btn_salvar = ctk.CTkButton(self, text="💾 Salvar Configurações", fg_color="green", hover_color="darkgreen", command=self.salvar_filtros_no_banco)
-        self.btn_salvar.pack(pady=30)
+        self.btn_salvar.grid(row=2, column=0, columnspan=3, pady=25)
 
-        # Ao iniciar a tela, tenta carregar do banco os últimos que foram salvos!
         self.carregar_dados_iniciais()
 
     # ==========================================
@@ -95,6 +105,15 @@ class PainelFiltros(ctk.CTkFrame):
             self.entry_km.insert(0, modelos_salvos_km)
         else:
             self.entry_km.insert(0, "KM: 1, KM 1, HIDROMETRO: 1, ODO: 1")
+            
+        try:
+            cods = db.carregar_codigos_combustiveis()
+            if cods["etanol"]: self.entry_etanol.insert(0, cods["etanol"])
+            if cods["gasolina"]: self.entry_gasolina.insert(0, cods["gasolina"])
+            if cods["s10"]: self.entry_s10.insert(0, cods["s10"])
+            if cods["s500"]: self.entry_s500.insert(0, cods["s500"])
+            if cods["arla"]: self.entry_arla.insert(0, cods["arla"])
+        except: pass
 
     def salvar_filtros_no_banco(self):
         try:
@@ -147,6 +166,12 @@ class PainelFiltros(ctk.CTkFrame):
             sucesso_f, msg_f = db.salvar_filtros(mes_escolhido, ano_escolhido)
             db.salvar_modelos_placa(modelos_placa_digitados)
             db.salvar_modelos_km(modelos_km_digitados) # Salva os KMs
+            
+            # Salva os códigos dos combustíveis (NOVO)
+            db.salvar_codigos_combustiveis(
+                self.entry_etanol.get(), self.entry_gasolina.get(), 
+                self.entry_s10.get(), self.entry_s500.get(),self.entry_arla.get()
+            )
             
             if sucesso_f:
                 messagebox.showinfo("✅ Sucesso", "Configurações, Placas e KMs salvos com sucesso!")

@@ -32,10 +32,18 @@ def abortar_nota_com_erro(page, log, dados, erro_msg):
     import database_setup as db
     db.atualizar_nota_raspada(dados) 
     
-    log("Clicando em Voltar e pulando para a próxima nota...")
+    log("Clicando em Voltar e aguardando a página carregar...")
     page.bring_to_front()
     page.locator('input[value="Voltar"]').first.click(force=True)
-    time.sleep(3)
+    
+    # Substitui o "time.sleep(3)" burro por uma espera inteligente do Playwright
+    try:
+        # Aguarda até que a rede do navegador fique calma (ou seja, a página carregou)
+        page.wait_for_load_state("networkidle", timeout=20000)
+    except:
+        pass # Se passar de 20 segundos, ele ignora e tenta forçar a continuação
+        
+    time.sleep(1.5)
     
 def converter_modelo_km_para_regex(modelo):
     """Transforma 'HIDRO: 1' em uma regra Regex para o robô extrair o KM"""
