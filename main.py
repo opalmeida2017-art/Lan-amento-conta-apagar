@@ -9,7 +9,7 @@ def main():
     # Instancia o controlador principal (O cérebro do projeto)
     app = AppController()
     
-    # Inicia o fluxo de verificação de licença, login e interface
+    # Inicia a interface (login/licença desativados em app_controller.REQUER_LOGIN_E_LICENCA)
     app.iniciar()
 
 if __name__ == "__main__":

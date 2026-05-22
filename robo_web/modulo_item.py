@@ -177,7 +177,11 @@ def processar_cadastro_item(page, log, idx, item_block, codigo_negocio, is_estoq
                 aba_item.wait_for_load_state("networkidle")
                 
                 aba_item.locator('input[id="formitemD:ItemD_descricao"]').fill(nome_item_temporario)
-                aba_item.locator('select[id="formitemD:ItemD_grupoD"]').select_option(value="107")
+                cod_grupo_padrao = db.carregar_codigo_grupo_item_padrao()
+                if not cod_grupo_padrao:
+                    print("[AVISO] Código do grupo INDEFINIDO não configurado em Filtros de Data.")
+                else:
+                    aba_item.locator('select[id="formitemD:ItemD_grupoD"]').select_option(value=cod_grupo_padrao)
                 
                 # Injeta a unidade que veio do XML
                 aba_item.locator('select[id="formitemD:ItemD_unidade"]').select_option(value=unidade_erp)

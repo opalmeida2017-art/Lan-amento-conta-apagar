@@ -7,11 +7,13 @@ class PainelFiltros(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
 
-        # Configura as 3 colunas para terem o mesmo tamanho
-        self.grid_columnconfigure((0, 1, 2), weight=1)
+        # Configura as 4 colunas para terem o mesmo tamanho
+        self.grid_columnconfigure((0, 1, 2, 3), weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(self, text="Configurações de Busca e Importação:", font=("Arial", 16, "bold")).grid(row=0, column=0, columnspan=3, pady=(20, 10))
+        ctk.CTkLabel(self, text="Configurações de Busca e Importação:", font=("Arial", 16, "bold")).grid(
+            row=0, column=0, columnspan=4, pady=(20, 10),
+        )
 
         # ==========================================
         # COLUNA 1: FILTROS DE DATA
@@ -75,10 +77,22 @@ class PainelFiltros(ctk.CTkFrame):
         self.entry_arla.pack(pady=4)
 
         # ==========================================
+        # COLUNA 4: GRUPO ITEM INDEFINIDO (1x5 — um campo editável)
+        # ==========================================
+        frame_grupo = ctk.CTkFrame(self, fg_color="#2b2b2b")
+        frame_grupo.grid(row=1, column=3, padx=10, pady=5, sticky="nsew")
+
+        ctk.CTkLabel(frame_grupo, text="📦 Grupo Item", font=("Arial", 14, "bold")).pack(pady=(15, 5))
+        ctk.CTkLabel(frame_grupo, text="INDEFINIDO (cadastro)", font=("Arial", 11)).pack(pady=(0, 8))
+        ctk.CTkLabel(frame_grupo, text="Cód. no ERP:").pack()
+        self.entry_cod_grupo_item = ctk.CTkEntry(frame_grupo, width=150, justify="center", placeholder_text="Cód. no ERP")
+        self.entry_cod_grupo_item.pack(pady=6, padx=20)
+
+        # ==========================================
         # BOTÃO SALVAR
         # ==========================================
         self.btn_salvar = ctk.CTkButton(self, text="💾 Salvar Configurações", fg_color="green", hover_color="darkgreen", command=self.salvar_filtros_no_banco)
-        self.btn_salvar.grid(row=2, column=0, columnspan=3, pady=25)
+        self.btn_salvar.grid(row=2, column=0, columnspan=4, pady=25)
 
         self.carregar_dados_iniciais()
 
@@ -114,6 +128,15 @@ class PainelFiltros(ctk.CTkFrame):
             if cods["s500"]: self.entry_s500.insert(0, cods["s500"])
             if cods["arla"]: self.entry_arla.insert(0, cods["arla"])
         except: pass
+
+        try:
+            cfg_rel = db.carregar_codigos_relatorios()
+            cod_grupo = str(cfg_rel.get('cod_grupo_item') or '').strip()
+            self.entry_cod_grupo_item.delete(0, "end")
+            if cod_grupo:
+                self.entry_cod_grupo_item.insert(0, cod_grupo)
+        except Exception:
+            pass
 
     def salvar_filtros_no_banco(self):
         try:
@@ -171,6 +194,13 @@ class PainelFiltros(ctk.CTkFrame):
             db.salvar_codigos_combustiveis(
                 self.entry_etanol.get(), self.entry_gasolina.get(), 
                 self.entry_s10.get(), self.entry_s500.get(),self.entry_arla.get()
+            )
+
+            cfg_rel = db.carregar_codigos_relatorios()
+            db.salvar_codigos_relatorios(
+                cfg_rel.get('rel_veiculo', '117'),
+                cfg_rel.get('rel_item', '118'),
+                self.entry_cod_grupo_item.get().strip(),
             )
             
             if sucesso_f:

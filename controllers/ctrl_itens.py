@@ -35,23 +35,27 @@ class ItensController:
     # ==========================================
     # LÓGICA DE MIGRAÇÃO COM O ROBÔ
     # ==========================================
-    def iniciar_migracao_lote(self, itens_codigos, novo_grupo_nome, popup_atualizar_status, grupo_atual="Filtrado"):
-        """Prepara os dados e dispara a Thread do robô de migração"""
+    def iniciar_migracao_lote(self, itens_codigos, novo_grupo_nome, popup_atualizar_status, grupo_atual="Filtrado", on_finalizado=None):
         config = db.carregar_configuracoes()
         if not config or not config.get('link'):
             popup_atualizar_status("❌ Configure o acesso ao ERP primeiro.")
             return
 
         def rodar():
-            # Chama o script do Playwright que criamos, agora passando o grupo_atual
-            modulo_migracao.iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, popup_atualizar_status, grupo_atual)
-            
-            # No final, manda a tela original atualizar a tabela sozinha
-            if self.view:
-                try:
-                    self.view.after(0, self.view.atualizar_tabela)
-                except Exception:
-                    pass
-                
-        # Inicia numa Thread para não travar a interface!
+            try:
+                modulo_migracao.iniciar_migracao_lote(
+                    config, itens_codigos, novo_grupo_nome, popup_atualizar_status, grupo_atual,
+                )
+                if self.view:
+                    try:
+                        self.view.after(0, self.view.atualizar_tabela)
+                    except Exception:
+                        pass
+            finally:
+                if on_finalizado:
+                    try:
+                        on_finalizado()
+                    except Exception:
+                        pass
+
         threading.Thread(target=rodar, daemon=True).start()

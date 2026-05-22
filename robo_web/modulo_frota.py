@@ -4,8 +4,14 @@ from datetime import datetime
 import pandas as pd
 from playwright.sync_api import sync_playwright
 import database_setup as db
+from robo_web.erp_lock import ERP_LOCK
 
 def baixar_e_importar_frota():
+    with ERP_LOCK:
+        _baixar_e_importar_frota_impl()
+
+
+def _baixar_e_importar_frota_impl():
     # Puxa o código da tabela blindada
     try: config_rel = db.carregar_codigos_relatorios()
     except: config_rel = {}
@@ -97,6 +103,11 @@ def baixar_e_importar_frota():
             browser.close()
 
 def baixar_e_importar_itens():
+    with ERP_LOCK:
+        _baixar_e_importar_itens_impl()
+
+
+def _baixar_e_importar_itens_impl():
     # Puxa o código da tabela blindada
     try: config_rel = db.carregar_codigos_relatorios()
     except: config_rel = {}

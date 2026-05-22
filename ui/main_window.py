@@ -53,6 +53,21 @@ class MainWindow(ctk.CTk):
                                    command=lambda: self.controller.ativar_sistema(self.entry_token.get().strip()))
         btn_ativar.pack(pady=20)
 
+    def mostrar_tela_bloqueio_licenca(self):
+        import database_setup as db
+        self.limpar_tela()
+        self.geometry("480x420")
+        ctk.CTkLabel(self, text="Sistema Bloqueado", font=("Arial", 24, "bold"), text_color="red").pack(pady=(40, 10))
+        ctk.CTkLabel(
+            self,
+            text="Licença suspensa (ativado = não) ou arquivo ausente no servidor.",
+            font=("Arial", 13),
+        ).pack(pady=(0, 15))
+        iid = db.obter_instalacao_id() or "— ainda não registrado —"
+        ctk.CTkLabel(self, text="ID desta instalação:", font=("Arial", 12, "bold")).pack()
+        ctk.CTkLabel(self, text=iid, font=("Consolas", 11), text_color="#3b8ed0", wraplength=420).pack(pady=(4, 20))
+        ctk.CTkButton(self, text="Tentar novamente", command=self.controller.tentar_revalidar_licenca).pack(pady=8)
+
     def mostrar_tela_login(self):
         self.limpar_tela()
         self.geometry("400x550")
@@ -105,11 +120,11 @@ class MainWindow(ctk.CTk):
 
     def mostrar_menu_principal(self):
         self.limpar_tela()
-        self.geometry("950x750") 
+        self.geometry("980x880") 
         self.eval('tk::PlaceWindow . center')
         
         # Criar a Tabview Principal
-        self.tabview = ctk.CTkTabview(self, width=900, height=700)
+        self.tabview = ctk.CTkTabview(self, width=920, height=800)
         self.tabview.pack(pady=20, padx=20)
         
         # Adicionar as Abas de Nível Superior
@@ -129,7 +144,7 @@ class MainWindow(ctk.CTk):
         lbl_titulo = ctk.CTkLabel(container, text="Dashboard da Automação", font=("Arial", 22, "bold"), text_color="#3b8ed0")
         lbl_titulo.pack(pady=(10, 5))
 
-        self.sub_tabview = ctk.CTkTabview(container, width=860, height=550)
+        self.sub_tabview = ctk.CTkTabview(container, width=900, height=680)
         self.sub_tabview.pack(pady=5, padx=10, fill="both", expand=True)
         
         # Criar as áreas para cada sub-aba

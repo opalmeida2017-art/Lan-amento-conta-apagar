@@ -82,6 +82,9 @@ def inicializar_banco():
     # 👇 NOVA LINHA AQUI 👇
     try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN nfe_estoque TEXT DEFAULT '☐'")
     except sqlite3.OperationalError: pass
+
+    try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN nfe_arquiva TEXT DEFAULT '☐'")
+    except sqlite3.OperationalError: pass
     
     # Criação da tabela oficial da Frota
     cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
@@ -218,6 +221,137 @@ def ativar_token_31_dias(token):
         return True, "Licença validada com sucesso! O sistema foi liberado por 31 dias."
     else:
         return False, "Token inválido ou falsificado!"
+
+# ==========================================
+# 3.1 LICENCIAMENTO REMOTO (ID POR INSTALAÇÃO)
+# ==========================================
+import uuid
+
+def criar_tabela_instalacao():
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS instalacao_licenca (
+            id INTEGER PRIMARY KEY,
+            instalacao_id TEXT UNIQUE NOT NULL,
+            razao_social TEXT,
+            nome_arquivo_github TEXT,
+            data_criacao TEXT NOT NULL,
+            ultimo_upload TEXT,
+            ultima_verificacao TEXT,
+            status TEXT DEFAULT 'pendente'
+        )
+    ''')
+    try:
+        c.execute('ALTER TABLE instalacao_licenca ADD COLUMN razao_social TEXT')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE instalacao_licenca ADD COLUMN nome_arquivo_github TEXT')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE instalacao_licenca ADD COLUMN ultimo_ativado_github TEXT')
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    conn.close()
+
+def obter_ou_criar_instalacao_id():
+    """Gera UUID único na primeira vez; reutiliza nas próximas."""
+    criar_tabela_instalacao()
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute('SELECT instalacao_id FROM instalacao_licenca WHERE id = 1')
+    row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+    novo_id = str(uuid.uuid4())
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute(
+        'INSERT INTO instalacao_licenca (id, instalacao_id, data_criacao, status) VALUES (1, ?, ?, ?)',
+        (novo_id, agora, 'pendente'),
+    )
+    conn.commit()
+    conn.close()
+    return novo_id
+
+def obter_instalacao_id():
+    criar_tabela_instalacao()
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute('SELECT instalacao_id FROM instalacao_licenca WHERE id = 1')
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def carregar_instalacao_licenca():
+    criar_tabela_instalacao()
+    conn = sqlite3.connect('sistema_automacao.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('SELECT * FROM instalacao_licenca WHERE id = 1')
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def salvar_razao_social_transportadora(razao_social, nome_arquivo_github):
+    criar_tabela_instalacao()
+    obter_ou_criar_instalacao_id()
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute(
+        'UPDATE instalacao_licenca SET razao_social = ?, nome_arquivo_github = ? WHERE id = 1',
+        (razao_social.strip(), nome_arquivo_github),
+    )
+    conn.commit()
+    conn.close()
+
+
+def registrar_upload_licenca_ok():
+    criar_tabela_instalacao()
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute(
+        'UPDATE instalacao_licenca SET ultimo_upload = ?, status = ? WHERE id = 1',
+        (agora, 'ativo'),
+    )
+    conn.commit()
+    conn.close()
+
+def registrar_verificacao_licenca(ok):
+    """Atualiza status só após leitura confirmada do JSON no GitHub."""
+    criar_tabela_instalacao()
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status = 'ativo' if ok else 'bloqueado'
+    ativado_github = 'sim' if ok else 'não'
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute(
+        'UPDATE instalacao_licenca SET ultima_verificacao = ?, status = ?, ultimo_ativado_github = ? WHERE id = 1',
+        (agora, status, ativado_github),
+    )
+    conn.commit()
+    conn.close()
+
+
+def limpar_bloqueio_indevido_rede():
+    """Remove bloqueio gravado por falha de rede (não por ativado=não no GitHub)."""
+    criar_tabela_instalacao()
+    conn = sqlite3.connect('sistema_automacao.db')
+    c = conn.cursor()
+    c.execute(
+        '''UPDATE instalacao_licenca
+           SET status = 'ativo', ultimo_ativado_github = 'sim'
+           WHERE id = 1 AND ultimo_ativado_github IN ('não', 'nao')
+             AND nome_arquivo_github IS NOT NULL AND nome_arquivo_github != '' ''',
+    )
+    conn.commit()
+    conn.close()
 
 # ==========================================
 # 4. MÓDULO DE CONFIGURAÇÕES E AUTOMAÇÃO
@@ -588,6 +722,47 @@ def atualizar_estoque_nota(chave_nfe, valor_estoque):
         print(f"Erro ao atualizar estoque: {e}")
         return False
     
+def atualizar_arquiva_nota(chave_nfe, valor_arquiva):
+    """Marca se a NFe está arquivada (robô ignora download e importação)."""
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE notas_raspadas SET nfe_arquiva = ? WHERE chave_nfe = ?",
+            (valor_arquiva, chave_nfe),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao atualizar arquiva: {e}")
+        return False
+
+
+def verificar_nota_arquiva(chave_nfe):
+    """True se no painel a nota está arquivada (exceto Importado/Processado)."""
+    if not chave_nfe or not str(chave_nfe).strip():
+        return False
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        c = conn.cursor()
+        c.execute(
+            "SELECT nfe_arquiva, status FROM notas_raspadas WHERE chave_nfe = ?",
+            (chave_nfe.strip(),),
+        )
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return False
+        status = str(row[1] or "").strip().upper()
+        if status in ("IMPORTADO", "PROCESSADO"):
+            return False
+        return "☑" in str(row[0] or "")
+    except Exception as e:
+        print(f"Erro ao verificar arquiva: {e}")
+        return False
+
+
 def verificar_nota_estoque(chave_nfe):
     """Verifica se o usuário marcou a flag ☑ NFe p/ Estoque no painel"""
     import sqlite3
@@ -683,19 +858,27 @@ def criar_tabela_relatorios():
         CREATE TABLE IF NOT EXISTS config_relatorios (
             id INTEGER PRIMARY KEY,
             rel_veiculo TEXT,
-            rel_item TEXT
+            rel_item TEXT,
+            cod_grupo_item TEXT
         )
     ''')
+    try:
+        c.execute("ALTER TABLE config_relatorios ADD COLUMN cod_grupo_item TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
-def salvar_codigos_relatorios(rel_veic, rel_item):
+def salvar_codigos_relatorios(rel_veic, rel_item, cod_grupo_item=""):
     criar_tabela_relatorios()
     import sqlite3
     conn = sqlite3.connect('sistema_automacao.db')
     c = conn.cursor()
     c.execute("DELETE FROM config_relatorios")
-    c.execute("INSERT INTO config_relatorios (id, rel_veiculo, rel_item) VALUES (1, ?, ?)", (rel_veic, rel_item))
+    c.execute(
+        "INSERT INTO config_relatorios (id, rel_veiculo, rel_item, cod_grupo_item) VALUES (1, ?, ?, ?)",
+        (rel_veic, rel_item, str(cod_grupo_item).strip()),
+    )
     conn.commit()
     conn.close()
 
@@ -708,7 +891,17 @@ def carregar_codigos_relatorios():
     c.execute("SELECT * FROM config_relatorios WHERE id=1")
     row = c.fetchone()
     conn.close()
-    return dict(row) if row else {'rel_veiculo': '117', 'rel_item': '118'}
+    if row:
+        dados = dict(row)
+        dados['cod_grupo_item'] = str(dados.get('cod_grupo_item') or '').strip()
+        return dados
+    return {'rel_veiculo': '117', 'rel_item': '118', 'cod_grupo_item': ''}
+
+
+def carregar_codigo_grupo_item_padrao():
+    """Código ERP do grupo INDEFINIDO no cadastro de item (configurado em Filtros)."""
+    cfg = carregar_codigos_relatorios()
+    return str(cfg.get('cod_grupo_item') or '').strip()
 
 def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""):
     """Busca todas as notas e usa um atalho seguro: se não houver filtro, mostra tudo!"""

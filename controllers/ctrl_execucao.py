@@ -19,6 +19,12 @@ class ExecucaoController:
             db.atualizar_estoque_nota(chave_da_nota, estado_banco)
         except Exception as e:
             print(f"[ERRO BANCO DE DADOS] Falha ao atualizar estoque: {e}")
+
+    def atualizar_arquiva(self, chave_da_nota, estado_banco):
+        try:
+            db.atualizar_arquiva_nota(chave_da_nota, estado_banco)
+        except Exception as e:
+            print(f"[ERRO BANCO DE DADOS] Falha ao atualizar arquiva: {e}")
         
     def iniciar_robo(self):
         self.app_controller.iniciar_robo()

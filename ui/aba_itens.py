@@ -1,5 +1,7 @@
 import customtkinter as ctk
 from tkinter import ttk, messagebox
+from ui.combo_busca_grupo import ComboBuscaGrupo
+
 
 class AbaItens(ctk.CTkFrame):
     def __init__(self, master, controller):
@@ -20,30 +22,12 @@ class AbaItens(ctk.CTkFrame):
         self.filtro_cod.grid(row=0, column=1, padx=2, pady=8)
 
         ctk.CTkLabel(frame_filtros, text="Grupo:").grid(row=0, column=2, padx=(15, 2), pady=8)
-        
-        # Carrega os grupos do banco de dados
-        grupos_disponiveis = self.controller.obter_grupos_unicos()
-        self.filtro_grupo = ctk.CTkComboBox(frame_filtros, width=180, values=grupos_disponiveis)
-        self.filtro_grupo.set("Todos")
+
+        self._grupos_disponiveis = self.controller.obter_grupos_unicos()
+        self.filtro_grupo = ComboBuscaGrupo(
+            frame_filtros, self._grupos_disponiveis, width=180, valor_inicial="Todos",
+        )
         self.filtro_grupo.grid(row=0, column=3, padx=2, pady=8)
-
-        # ==========================================================
-        # 🟢 CORREÇÃO 1: FILTRO DE TECLADO NA TELA PRINCIPAL
-        # ==========================================================
-        def filtrar_grupos_tela(event):
-            # Ignora teclas de navegação para não atrapalhar o dropdown
-            if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Tab']:
-                return
-            
-            texto = self.filtro_grupo.get().lower()
-            if not texto:
-                self.filtro_grupo.configure(values=grupos_disponiveis)
-            else:
-                filtrados = [g for g in grupos_disponiveis if texto in g.lower()]
-                self.filtro_grupo.configure(values=filtrados if filtrados else grupos_disponiveis)
-
-        # Aplica o espião de teclado diretamente na caixa de texto interna do ComboBox
-        self.filtro_grupo._entry.bind('<KeyRelease>', filtrar_grupos_tela)
 
         ctk.CTkLabel(frame_filtros, text="Descrição:").grid(row=0, column=4, padx=(15, 2), pady=8)
         self.filtro_desc = ctk.CTkEntry(frame_filtros, width=200)
@@ -55,8 +39,10 @@ class AbaItens(ctk.CTkFrame):
         btn_limpar = ctk.CTkButton(frame_filtros, text="Limpar", width=60, fg_color="gray", command=self.limpar_filtros)
         btn_limpar.grid(row=0, column=7, padx=5, pady=8)
 
-        # ====== BOTÃO DE MIGRAÇÃO ======
-        btn_migrar = ctk.CTkButton(frame_filtros, text="🔄 Alterar Grupo em Lote", width=150, fg_color="#b8860b", hover_color="#8a6508", command=self.abrir_popup_migracao)
+        btn_migrar = ctk.CTkButton(
+            frame_filtros, text="🔄 Alterar Grupo em Lote", width=150,
+            fg_color="#b8860b", hover_color="#8a6508", command=self.abrir_popup_migracao,
+        )
         btn_migrar.grid(row=0, column=8, padx=(20, 5), pady=8)
 
         frame_tabela = ctk.CTkFrame(self)
@@ -64,11 +50,11 @@ class AbaItens(ctk.CTkFrame):
 
         colunas = ("codItemD", "descGrupoImp", "descNegocioImp", "descricao")
         self.tabela_itens = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=10)
-        
+
         scroll_y = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tabela_itens.yview)
         scroll_x = ttk.Scrollbar(frame_tabela, orient="horizontal", command=self.tabela_itens.xview)
         self.tabela_itens.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-        
+
         scroll_x.pack(side="bottom", fill="x")
         scroll_y.pack(side="right", fill="y")
         self.tabela_itens.pack(side="left", fill="both", expand=True)
@@ -77,7 +63,7 @@ class AbaItens(ctk.CTkFrame):
         self.tabela_itens.heading("descGrupoImp", text="Grupo Atual")
         self.tabela_itens.heading("descNegocioImp", text="Negócio")
         self.tabela_itens.heading("descricao", text="Descrição")
-        
+
         self.tabela_itens.column("codItemD", width=90, anchor="center")
         self.tabela_itens.column("descGrupoImp", width=180, anchor="w")
         self.tabela_itens.column("descNegocioImp", width=180, anchor="w")
@@ -88,30 +74,34 @@ class AbaItens(ctk.CTkFrame):
     def limpar_filtros(self):
         self.filtro_cod.delete(0, 'end')
         self.filtro_desc.delete(0, 'end')
-        self.filtro_grupo.configure(values=self.controller.obter_grupos_unicos())
+        self._grupos_disponiveis = self.controller.obter_grupos_unicos()
+        self.filtro_grupo.atualizar_valores(self._grupos_disponiveis)
         self.filtro_grupo.set("Todos")
         self.atualizar_tabela()
 
     def atualizar_tabela(self):
         for item in self.tabela_itens.get_children():
             self.tabela_itens.delete(item)
-            
-        itens_db = self.controller.obter_itens_filtrados(
-            cod=self.filtro_cod.get(), 
-            grupo=self.filtro_grupo.get(), 
-            descricao=self.filtro_desc.get()
-        )
-        
-        for i in itens_db:
-            self.tabela_itens.insert("", "end", values=(i['codItemD'], i['descGrupoImp'], i['descNegocioImp'], i['descricao']))
 
-    # ==========================================
-    # LÓGICA DO POPUP DE MIGRAÇÃO
-    # ==========================================
+        itens_db = self.controller.obter_itens_filtrados(
+            cod=self.filtro_cod.get(),
+            grupo=self.filtro_grupo.get(),
+            descricao=self.filtro_desc.get(),
+        )
+
+        for i in itens_db:
+            self.tabela_itens.insert(
+                "", "end",
+                values=(i['codItemD'], i['descGrupoImp'], i['descNegocioImp'], i['descricao']),
+            )
+
     def abrir_popup_migracao(self):
-        grupo_atual = self.filtro_grupo.get()
+        grupo_atual = self.filtro_grupo.get().strip()
         if grupo_atual == "Todos" or not grupo_atual:
-            messagebox.showwarning("Aviso de Segurança", "Para usar esta função, primeiro filtre a tabela por um GRUPO específico.")
+            messagebox.showwarning(
+                "Aviso de Segurança",
+                "Para usar esta função, primeiro filtre a tabela por um GRUPO específico.",
+            )
             return
 
         itens_na_tela = []
@@ -125,72 +115,98 @@ class AbaItens(ctk.CTkFrame):
 
         popup = ctk.CTkToplevel(self)
         popup.title(f"Migrar itens do grupo: {grupo_atual}")
-        popup.geometry("600x550")
+        popup.geometry("600x520")
+        popup.minsize(500, 420)
         popup.attributes("-topmost", True)
-        
-        popup.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() // 2) - (600 // 2)
-        y = self.winfo_y() + (self.winfo_height() // 2) - (550 // 2)
-        popup.geometry(f"+{x}+{y}")
 
-        ctk.CTkLabel(popup, text="Selecione os itens e o Novo Grupo", font=("Arial", 16, "bold")).pack(pady=10)
+        popup.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - 300
+        y = self.winfo_y() + (self.winfo_height() // 2) - 260
+        popup.geometry(f"600x520+{x}+{y}")
+
+        ctk.CTkLabel(
+            popup, text="Selecione os itens e o Novo Grupo", font=("Arial", 16, "bold"),
+        ).pack(pady=10)
 
         frame_destino = ctk.CTkFrame(popup)
         frame_destino.pack(fill="x", padx=20, pady=5)
         ctk.CTkLabel(frame_destino, text="Mover para o Grupo:").pack(side="left", padx=10)
-        
+
         grupos_sem_todos = [g for g in self.controller.obter_grupos_unicos() if g != "Todos"]
-        combo_novo_grupo = ctk.CTkComboBox(frame_destino, width=250, values=grupos_sem_todos)
+        combo_novo_grupo = ComboBuscaGrupo(
+            frame_destino, grupos_sem_todos, width=250,
+            valor_inicial=grupos_sem_todos[0] if grupos_sem_todos else "",
+        )
         combo_novo_grupo.pack(side="left", padx=10, pady=10)
 
-        # ==========================================================
-        # 🟢 CORREÇÃO 2: FILTRO DE TECLADO NO POPUP
-        # ==========================================================
-        def filtrar_grupos_popup(event):
-            if event.keysym in ['Up', 'Down', 'Left', 'Right', 'Return', 'Tab']:
-                return
-                
-            texto = combo_novo_grupo.get().lower()
-            if not texto:
-                combo_novo_grupo.configure(values=grupos_sem_todos)
-            else:
-                filtrados = [g for g in grupos_sem_todos if texto in g.lower()]
-                combo_novo_grupo.configure(values=filtrados if filtrados else grupos_sem_todos)
+        ctk.CTkLabel(
+            popup, text=f"Itens encontrados ({len(itens_na_tela)}):",
+        ).pack(anchor="w", padx=20, pady=(10, 0))
 
-        combo_novo_grupo._entry.bind('<KeyRelease>', filtrar_grupos_popup)
-
-        ctk.CTkLabel(popup, text=f"Itens encontrados ({len(itens_na_tela)}):").pack(anchor="w", padx=20, pady=(10,0))
-        painel_checks = ctk.CTkScrollableFrame(popup, width=500, height=250)
-        painel_checks.pack(padx=20, pady=5, fill="both", expand=True)
+        painel_checks = ctk.CTkScrollableFrame(popup, width=500, height=200)
+        painel_checks.pack(padx=20, pady=5, fill="x")
 
         check_vars = {}
         for item in itens_na_tela:
             var = ctk.BooleanVar(value=True)
             check_vars[item['codigo']] = var
-            texto_chk = f"[{item['codigo']}] {item['descricao'][:50]}..." 
+            texto_chk = f"[{item['codigo']}] {item['descricao'][:50]}..."
             chk = ctk.CTkCheckBox(painel_checks, text=texto_chk, variable=var)
             chk.pack(anchor="w", pady=2)
 
-        lbl_status = ctk.CTkLabel(popup, text="Aguardando início...", text_color="gray")
-        lbl_status.pack(pady=5)
+        frame_rodape = ctk.CTkFrame(popup, fg_color="transparent")
+        frame_rodape.pack(side="bottom", fill="x", padx=20, pady=(5, 15))
+
+        lbl_status = ctk.CTkLabel(frame_rodape, text="Aguardando início...", text_color="gray")
+        lbl_status.pack(pady=(0, 8))
 
         def disparar_robo():
-            novo_grupo = combo_novo_grupo.get()
-            if not novo_grupo: return
-            
+            novo_grupo = combo_novo_grupo.get().strip()
+            if not novo_grupo:
+                return
+            if novo_grupo.lower() == grupo_atual.lower():
+                messagebox.showwarning(
+                    "Aviso", "O grupo de destino deve ser diferente do grupo atual.",
+                )
+                return
+
             itens_marcados = [cod for cod, var in check_vars.items() if var.get()]
-            
             if not itens_marcados:
                 messagebox.showwarning("Aviso", "Nenhum item selecionado.")
                 return
 
             btn_iniciar.configure(state="disabled", text="Robô trabalhando...")
             combo_novo_grupo.configure(state="disabled")
-            
+
             def atualizar_texto_status(msg):
-                popup.after(0, lambda: lbl_status.configure(text=msg))
+                def _atualizar(m=msg):
+                    if popup.winfo_exists():
+                        lbl_status.configure(text=m)
+                popup.after(0, _atualizar)
 
-            self.controller.iniciar_migracao_lote(itens_marcados, novo_grupo, atualizar_texto_status, grupo_atual=grupo_atual)
+            def reabilitar_popup():
+                def _reabilitar():
+                    if not popup.winfo_exists():
+                        return
+                    try:
+                        btn_iniciar.configure(state="normal", text="▶ INICIAR MIGRAÇÃO")
+                        combo_novo_grupo.configure(state="normal")
+                    except Exception:
+                        pass
+                popup.after(0, _reabilitar)
 
-        btn_iniciar = ctk.CTkButton(popup, text="▶ INICIAR MIGRAÇÃO", fg_color="#b8860b", hover_color="#8a6508", font=("Arial", 14, "bold"), height=40, command=disparar_robo)
-        btn_iniciar.pack(pady=15)
+            self.controller.iniciar_migracao_lote(
+                itens_marcados, novo_grupo, atualizar_texto_status,
+                grupo_atual=grupo_atual, on_finalizado=reabilitar_popup,
+            )
+
+        btn_iniciar = ctk.CTkButton(
+            frame_rodape,
+            text="▶ INICIAR MIGRAÇÃO",
+            fg_color="#b8860b",
+            hover_color="#8a6508",
+            font=("Arial", 14, "bold"),
+            height=40,
+            command=disparar_robo,
+        )
+        btn_iniciar.pack(fill="x")

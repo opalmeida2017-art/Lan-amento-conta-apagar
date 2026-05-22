@@ -11,9 +11,9 @@ class FiltrosController:
         except:
             return {}
 
-    def salvar_tudo(self, rel_veiculo, rel_item, comando_salvar_filtros):
-        # 1. Salva EXCLUSIVAMENTE os Códigos na Tabela Blindada
-        db.salvar_codigos_relatorios(rel_veiculo, rel_item)
+    def salvar_tudo(self, rel_veiculo, rel_item, cod_grupo_item, comando_salvar_filtros):
+        # 1. Salva códigos de relatórios e grupo INDEFINIDO do item
+        db.salvar_codigos_relatorios(rel_veiculo, rel_item, cod_grupo_item)
         
         # 2. Executa a função de salvar do painel original (Mês, Ano, Combustíveis)
         if comando_salvar_filtros:
@@ -22,4 +22,7 @@ class FiltrosController:
             except Exception as e:
                 print(f"Erro ao salvar filtros do painel: {e}")
                 
-        messagebox.showinfo("Sucesso", "✅ Todas as configurações (Datas, Combustíveis e Relatórios) foram salvas!")
+        messagebox.showinfo(
+            "Sucesso",
+            "✅ Todas as configurações (Datas, Combustíveis, Relatórios e Grupo Item) foram salvas!",
+        )

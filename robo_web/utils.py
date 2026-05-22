@@ -1,6 +1,41 @@
 import re
 import time
 
+
+class ErroServidorIndisponivel(Exception):
+    """ERP retornou HTTP 503 (Payara — Service Unavailable)."""
+
+
+def pagina_servidor_indisponivel(page):
+    """Detecta a tela HTTP 503 do Payara (SAT / Intersite)."""
+    try:
+        if page.is_closed():
+            return False
+        titulo = page.title() or ''
+        try:
+            corpo = page.locator('body').inner_text(timeout=5000)
+        except Exception:
+            corpo = page.content()
+    except Exception:
+        return False
+
+    if 'HTTP Status 503' in titulo or 'HTTP Status 503' in corpo:
+        return True
+    if 'Service Unavailable' in corpo and 'Payara Server' in corpo:
+        return True
+    if 'Service Unavailable' in titulo and '503' in titulo:
+        return True
+    return False
+
+
+def verificar_pagina_erp_ok(page, log=None):
+    """Lança ErroServidorIndisponivel se a página atual for erro 503."""
+    if pagina_servidor_indisponivel(page):
+        if log:
+            log('⚠️ Servidor ERP indisponível (HTTP 503). Fechando e aguardando 2 min...')
+        raise ErroServidorIndisponivel('HTTP 503 - Service Unavailable')
+
+
 def converter_modelo_para_regex(modelo):
     """Transforma 'PLACA: AAA-1A11' em uma regra Regex para o robô"""
     match = re.search(r'([A1][A1\-\s]{5,}[A1])', modelo)

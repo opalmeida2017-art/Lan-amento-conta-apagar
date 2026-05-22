@@ -1,6 +1,6 @@
 import time
 import database_setup as db
-from robo_web.utils import abortar_nota_com_erro
+from robo_web.utils import abortar_nota_com_erro, ErroServidorIndisponivel, verificar_pagina_erp_ok
 from robo_web.modulo_veiculo import processar_veiculo
 from robo_web.modulo_km import processar_km
 from robo_web.modulo_item import processar_cadastro_item
@@ -10,9 +10,11 @@ def processar_importacao(page, log, notas_processadas=None):
     if notas_processadas is None:
         notas_processadas = set()
 
+    verificar_pagina_erp_ok(page, log)
     log("🔄 Atualizando painel e verificando notas...")
     page.locator('input[id="formCad:buttonAtualizar"]').click()
-    time.sleep(3) 
+    time.sleep(3)
+    verificar_pagina_erp_ok(page, log)
     
     seletor_linhas = "tbody[id='formCad:tablepnfedestinada:tbn'] tr"
     try:
@@ -25,8 +27,9 @@ def processar_importacao(page, log, notas_processadas=None):
     total_linhas = linhas.count()
     
     for i in range(total_linhas):
+        verificar_pagina_erp_ok(page, log)
         linha = page.locator(seletor_linhas).nth(i)
-        
+
         num_nota = linha.locator("td.rf-edt-td-numNota").text_content().strip()
         celula_status = linha.locator("td.rf-edt-td-status")
         status_texto = celula_status.text_content().strip().upper()
@@ -60,8 +63,14 @@ def processar_importacao(page, log, notas_processadas=None):
             "erro_importacao": "",
             "observacao_nfe": ""
         }
-        
-        # ====================================================================
+
+        # Nota já no painel e marcada como arquivada — não baixa XML nem importa
+        chave_nfe = (dados.get("chave_nfe") or "").strip()
+        if chave_nfe and db.verificar_nota_arquiva(chave_nfe):
+            log(f"📁 Nota {num_nota} arquivada no painel. Pulando download e importação.")
+            notas_processadas.add(num_nota)
+            continue
+
         # ====================================================================
         # LÓGICA DE DOWNLOAD (Checkbox -> Ciência -> Download)
         # ====================================================================

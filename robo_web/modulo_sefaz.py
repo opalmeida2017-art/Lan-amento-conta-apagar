@@ -1,6 +1,8 @@
 import time
 import calendar
 
+from .utils import ErroServidorIndisponivel, verificar_pagina_erp_ok
+
 # Mapa de meses para conversão de texto para número
 MAPA_MESES = {
     "Jan": 1, "Fev": 2, "Mar": 3, "Abr": 4, "Mai": 5, "Jun": 6,
@@ -16,15 +18,16 @@ def consultar_sefaz(page, config, meses, anos, log):
         log("Acessando o sistema para consulta SEFAZ...")
         page.goto(config['link'])
         page.wait_for_load_state("networkidle")
-        
+        verificar_pagina_erp_ok(page, log)
+
         # 1. LOGIN
         log("Realizando login no sistema...")
         page.locator('input[type="text"]').fill(config['user_sis'])
         page.locator('input[type="password"]').fill(config['senha_sis'])
         page.locator('input[value="Entrar"], button:has-text("Entrar")').click()
-        
-        # Aguarda um pouco para o login processar
+
         time.sleep(3)
+        verificar_pagina_erp_ok(page, log)
 
         # 2. NAVEGAÇÃO AO PAINEL DE NFE
         log("Navegando até o Painel de NFe (Notas Destinadas)...")
@@ -38,6 +41,7 @@ def consultar_sefaz(page, config, meses, anos, log):
         page.locator("text='Painel de NFe (Notas de Compras/Destinadas)' >> visible=true").first.click(force=True)
         page.wait_for_load_state("networkidle")
         time.sleep(2)
+        verificar_pagina_erp_ok(page, log)
 
         # 3. LOOP DE CONSULTAS POR EMPRESA
         combo_empresas = page.locator('select[id="formCad:codEmpresas"]')
@@ -72,16 +76,22 @@ def consultar_sefaz(page, config, meses, anos, log):
                     # Clica no botão Consultar
                     log("Clicando no botão 1. Consultar...")
                     page.locator(r"text=/1\.\s*Consultar/i").first.click(force=True)
-                    
-                    # Espera a mensagem de sucesso (Aguardar até 60 segundos)
-                    # O sistema SAT costuma mostrar um balão ou texto contendo "sucesso"
+                    verificar_pagina_erp_ok(page, log)
+
                     page.locator("text=/sucesso/i").first.wait_for(state="visible", timeout=60000)
+                    verificar_pagina_erp_ok(page, log)
                     log(f"Sucesso na consulta de {mes_texto}/{ano}!")
                     time.sleep(1)
 
         log("Todas as consultas na SEFAZ foram concluídas com êxito.")
         return True
 
+    except ErroServidorIndisponivel:
+        raise
     except Exception as e:
+        try:
+            verificar_pagina_erp_ok(page, log)
+        except ErroServidorIndisponivel:
+            raise
         log(f"ERRO NO MODULO SEFAZ: {str(e)}")
         return False

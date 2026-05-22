@@ -2,6 +2,23 @@ import customtkinter as ctk
 from tkinter import ttk
 
 class AbaExecucao(ctk.CTkFrame):
+    # Importado e Processado: sem coluna Arquiva no painel
+    STATUS_SEM_ARQUIVA = frozenset({"IMPORTADO", "PROCESSADO"})
+    # Importado e Processado: sem checkbox de Estoque
+    STATUS_SEM_ESTOQUE = frozenset({"IMPORTADO", "PROCESSADO"})
+
+    @classmethod
+    def _normalizar_status(cls, status):
+        return str(status or "").strip().upper()
+
+    @classmethod
+    def _pode_marcar_arquiva(cls, status):
+        return cls._normalizar_status(status) not in cls.STATUS_SEM_ARQUIVA
+
+    @classmethod
+    def _mostra_checkbox_estoque(cls, status):
+        return cls._normalizar_status(status) not in cls.STATUS_SEM_ESTOQUE
+
     def __init__(self, master, controller):
         super().__init__(master, fg_color="transparent")
         self.controller = controller
@@ -43,7 +60,10 @@ class AbaExecucao(ctk.CTkFrame):
         self.filtro_nota.grid(row=0, column=7, padx=2, pady=8)
 
         ctk.CTkLabel(frame_filtros, text="Status:").grid(row=0, column=8, padx=(10,2))
-        self.filtro_status = ctk.CTkComboBox(frame_filtros, width=110, values=["Todos", "Importado", "Erro", "Processando"])
+        self.filtro_status = ctk.CTkComboBox(
+            frame_filtros, width=110,
+            values=["Todos", "Importado", "Processado", "Erro", "Processando"],
+        )
         self.filtro_status.set("Todos")
         self.filtro_status.grid(row=0, column=9, padx=2, pady=8)
 
@@ -62,7 +82,7 @@ class AbaExecucao(ctk.CTkFrame):
         frame_tabela = ctk.CTkFrame(self)
         frame_tabela.pack(pady=10, padx=10, fill="both", expand=True)
 
-        colunas = ("cod_interno", "status", "forn", "nota", "data", "valor", "sit_nfe", "chave", "filial", "user", "erro", "observacao", "estoque")
+        colunas = ("cod_interno", "status", "forn", "nota", "data", "valor", "sit_nfe", "chave", "filial", "user", "erro", "observacao", "estoque", "arquiva")
         self.tabela_nf = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=8)
         
         scroll_y = ttk.Scrollbar(frame_tabela, orient="vertical", command=self.tabela_nf.yview)
@@ -86,7 +106,8 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.heading("erro", text="Erro Importação")
         self.tabela_nf.heading("observacao", text="Observação NFe")
         self.tabela_nf.heading("estoque", text="NFe p/ Estoque")
-        
+        self.tabela_nf.heading("arquiva", text="Arquiva")
+
         self.tabela_nf.column("cod_interno", width=90, anchor="center")
         self.tabela_nf.column("status", width=90, anchor="center")
         self.tabela_nf.column("forn", width=200, anchor="w") 
@@ -100,9 +121,11 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.column("erro", width=250, anchor="w")
         self.tabela_nf.column("observacao", width=250, anchor="w")
         self.tabela_nf.column("estoque", width=110, anchor="center")
+        self.tabela_nf.column("arquiva", width=90, anchor="center")
 
         self.tabela_nf.bind("<ButtonRelease-1>", self.evento_clique_unico)
-        
+        self._popup_detalhe = None
+
         self.status_label = ctk.CTkLabel(self, text="Status: Aguardando...", font=("Arial", 12), text_color="gray")
         self.status_label.pack(pady=(0, 5))
 
@@ -160,11 +183,17 @@ class AbaExecucao(ctk.CTkFrame):
                     # Tenta ler os dados com proteção contra formato incorreto (.get)
                     status_atual = limpa_none(nota_item.get('status')).strip().upper()
                     
-                    if status_atual == "IMPORTADO": 
+                    if not self._mostra_checkbox_estoque(status_atual):
                         caixa_estoque = ""
                     else:
                         estoque_banco = limpa_none(nota_item.get('nfe_estoque'))
                         caixa_estoque = "   [ ☑ ]   " if "☑" in estoque_banco else "   [ ☐ ]   "
+
+                    if self._pode_marcar_arquiva(status_atual):
+                        arquiva_banco = limpa_none(nota_item.get('nfe_arquiva'))
+                        caixa_arquiva = "   [ ☑ ]   " if "☑" in arquiva_banco else "   [ ☐ ]   "
+                    else:
+                        caixa_arquiva = ""
 
                     self.tabela_nf.insert("", "end", values=(
                         limpa_none(nota_item.get('codigo_interno')), 
@@ -178,8 +207,9 @@ class AbaExecucao(ctk.CTkFrame):
                         limpa_none(nota_item.get('filial')), 
                         limpa_none(nota_item.get('user_ins')),
                         limpa_none(nota_item.get('erro_importacao')), 
-                        limpa_none(nota_item.get('observacao_nfe')), 
-                        caixa_estoque
+                        limpa_none(nota_item.get('observacao_nfe')),
+                        caixa_estoque,
+                        caixa_arquiva,
                     ))
                 except AttributeError as e:
                     print(f"[ERRO DE DADO] ❌ O banco retornou um formato inesperado. Erro: {e}")
@@ -190,46 +220,70 @@ class AbaExecucao(ctk.CTkFrame):
 
     def evento_clique_unico(self, event):
         regiao = self.tabela_nf.identify_region(event.x, event.y)
-        if regiao != "cell": return 
+        if regiao != "cell":
+            return
         coluna_clicada = self.tabela_nf.identify_column(event.x)
         item_clicado = self.tabela_nf.identify_row(event.y)
-        if not item_clicado: return
+        if not item_clicado:
+            return
 
         valores = list(self.tabela_nf.item(item_clicado, "values"))
-        status = str(valores[1]).strip().upper() if valores[1] else ""
-        chave_da_nota = str(valores[7]).strip()
-        try: erro = valores[10]
-        except IndexError: erro = "Sem erros."
-        try: observacao = valores[11]
-        except IndexError: observacao = "Sem observação registrada."
+        status = str(valores[1]).strip().upper() if len(valores) > 1 and valores[1] else ""
+        chave_da_nota = str(valores[7]).strip() if len(valores) > 7 else ""
+        erro = str(valores[10]).strip() if len(valores) > 10 else ""
+        observacao = str(valores[11]).strip() if len(valores) > 11 else ""
 
-        if coluna_clicada == "#13":
-            if status == "IMPORTADO" or not valores[12].strip(): return 
-            estado_atual = valores[12] 
-            
+        # Coluna Arquiva (#14) — só Erro ou Importado
+        if coluna_clicada == "#14":
+            if not self._pode_marcar_arquiva(status):
+                return
+            if not chave_da_nota or len(valores) < 14 or not str(valores[13]).strip():
+                return
+            estado_atual = valores[13]
             if "☑" in estado_atual:
                 novo_estado_tela = "   [ ☐ ]   "
                 estado_banco = "☐"
             else:
                 novo_estado_tela = "   [ ☑ ]   "
                 estado_banco = "☑"
-            
+            valores[13] = novo_estado_tela
+            self.tabela_nf.item(item_clicado, values=valores)
+            self.controller.atualizar_arquiva(chave_da_nota, estado_banco)
+            return
+
+        # Coluna NFe p/ Estoque (#13) — alternar checkbox
+        if coluna_clicada == "#13":
+            if not self._mostra_checkbox_estoque(status) or len(valores) < 13 or not str(valores[12]).strip():
+                return
+            estado_atual = valores[12]
+            if "☑" in estado_atual:
+                novo_estado_tela = "   [ ☐ ]   "
+                estado_banco = "☐"
+            else:
+                novo_estado_tela = "   [ ☑ ]   "
+                estado_banco = "☑"
             valores[12] = novo_estado_tela
             self.tabela_nf.item(item_clicado, values=valores)
-            
             self.controller.atualizar_estoque(chave_da_nota, estado_banco)
             return
 
+        # Só abre popup ao clicar na coluna Observação (#12)
         if coluna_clicada == "#12":
-            self.mostrar_popup_texto("Observação da NFe", observacao)
+            if observacao:
+                self.mostrar_popup_texto("Observação da NFe", observacao)
             return
 
-        if status == "ERRO" and coluna_clicada != "#13":
-            self.mostrar_popup_texto("Motivo do Erro", erro)
+        # Só abre popup ao clicar na coluna Erro Importação (#11), se houver erro
+        if coluna_clicada == "#11":
+            if status == "ERRO" and erro:
+                self.mostrar_popup_texto("Motivo do Erro", erro)
             return
 
     def mostrar_popup_texto(self, titulo, texto):
+        if self._popup_detalhe and self._popup_detalhe.winfo_exists():
+            self._popup_detalhe.destroy()
         popup = ctk.CTkToplevel(self)
+        self._popup_detalhe = popup
         popup.title(titulo)
         popup.geometry("600x350")
         popup.attributes("-topmost", True)
@@ -244,5 +298,11 @@ class AbaExecucao(ctk.CTkFrame):
         caixa_texto.pack(pady=10, padx=20)
         caixa_texto.insert("0.0", texto)
         caixa_texto.configure(state="disabled")
-        btn_fechar = ctk.CTkButton(popup, text="Fechar", command=popup.destroy, fg_color="gray", width=120)
+        def fechar():
+            if popup.winfo_exists():
+                popup.destroy()
+            self._popup_detalhe = None
+
+        btn_fechar = ctk.CTkButton(popup, text="Fechar", command=fechar, fg_color="gray", width=120)
         btn_fechar.pack(pady=5)
+        popup.protocol("WM_DELETE_WINDOW", fechar)
