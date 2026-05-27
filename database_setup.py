@@ -51,7 +51,31 @@ def inicializar_banco():
     cursor.execute('''CREATE TABLE IF NOT EXISTS Configuracoes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, link_sistema TEXT, usuario_sistema TEXT, 
         senha_sistema_criptografada BLOB, email_smtp TEXT, email_usuario TEXT, 
-        email_senha_criptografada BLOB, email_ssl INTEGER, email_porta INTEGER)''')
+        email_senha_criptografada BLOB, email_ssl INTEGER, email_porta INTEGER,
+        email_agendamento_tipo TEXT DEFAULT '', email_intervalo_horas INTEGER DEFAULT 1,
+        email_proxima_execucao TEXT DEFAULT '', email_ultima_execucao TEXT DEFAULT '',
+        email_destinatarios TEXT DEFAULT '')''')
+
+    try:
+        cursor.execute("ALTER TABLE Configuracoes ADD COLUMN email_agendamento_tipo TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE Configuracoes ADD COLUMN email_intervalo_horas INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE Configuracoes ADD COLUMN email_proxima_execucao TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE Configuracoes ADD COLUMN email_ultima_execucao TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE Configuracoes ADD COLUMN email_destinatarios TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT UNIQUE, 
@@ -61,13 +85,29 @@ def inicializar_banco():
         id INTEGER PRIMARY KEY AUTOINCREMENT, numero_nf TEXT, status TEXT DEFAULT 'Pendente', data_registro DATETIME DEFAULT CURRENT_TIMESTAMP)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS filtros_salvos (
-        id INTEGER PRIMARY KEY, mes TEXT, ano TEXT)''')
+        id INTEGER PRIMARY KEY, mes TEXT, ano TEXT,
+        cod_filial TEXT DEFAULT '', cod_unidade_embarque TEXT DEFAULT '',
+        ultimos_30_dias INTEGER DEFAULT 0)''')
+
+    try:
+        cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN cod_filial TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN cod_unidade_embarque TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN ultimos_30_dias INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
         
     # TABELA COM A COLUNA NOVA DE OBSERVAÇÃO
     cursor.execute('''CREATE TABLE IF NOT EXISTS notas_raspadas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT, fornecedor TEXT, num_nota TEXT, data_em TEXT,
         valor TEXT, sit_nfe TEXT, chave_nfe TEXT, filial TEXT, user_ins TEXT,
-        codigo_interno TEXT, erro_importacao TEXT, observacao_nfe TEXT)''')
+        codigo_interno TEXT, erro_importacao TEXT, observacao_nfe TEXT,
+        data_insercao TEXT DEFAULT '')''')
 
     # TRUQUE PARA ATUALIZAR O BANCO ANTIGO
     try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN codigo_interno TEXT")
@@ -78,6 +118,9 @@ def inicializar_banco():
 
     try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN observacao_nfe TEXT")
     except sqlite3.OperationalError: pass 
+    
+    try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN data_insercao TEXT DEFAULT ''")
+    except sqlite3.OperationalError: pass
     
     # 👇 NOVA LINHA AQUI 👇
     try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN nfe_estoque TEXT DEFAULT '☐'")
@@ -359,7 +402,21 @@ def limpar_bloqueio_indevido_rede():
 def carregar_chave():
     return open("secret.key", "rb").read()
 
-def salvar_configuracoes(link, user_sis, senha_sis, smtp, user_email, senha_email, ssl, porta):
+def salvar_configuracoes(
+    link,
+    user_sis,
+    senha_sis,
+    smtp,
+    user_email,
+    senha_email,
+    ssl,
+    porta,
+    agendamento_tipo='',
+    intervalo_horas=1,
+    proxima_execucao='',
+    ultima_execucao='',
+    destinatarios='',
+):
     chave = carregar_chave()
     f = Fernet(chave)
     
@@ -372,13 +429,26 @@ def salvar_configuracoes(link, user_sis, senha_sis, smtp, user_email, senha_emai
     cursor.execute("SELECT id FROM Configuracoes WHERE id = 1")
     if cursor.fetchone():
         cursor.execute("""UPDATE Configuracoes SET link_sistema=?, usuario_sistema=?, senha_sistema_criptografada=?, 
-                          email_smtp=?, email_usuario=?, email_senha_criptografada=?, email_ssl=?, email_porta=? WHERE id=1""",
-                       (link, user_sis, senha_sis_crypt, smtp, user_email, senha_email_crypt, ssl, porta))
+                          email_smtp=?, email_usuario=?, email_senha_criptografada=?, email_ssl=?, email_porta=?,
+                          email_agendamento_tipo=?, email_intervalo_horas=?, email_proxima_execucao=?, email_ultima_execucao=?,
+                          email_destinatarios=?
+                          WHERE id=1""",
+                       (
+                           link, user_sis, senha_sis_crypt, smtp, user_email, senha_email_crypt, ssl, porta,
+                           agendamento_tipo, intervalo_horas, proxima_execucao, ultima_execucao,
+                           str(destinatarios or '').strip(),
+                       ))
     else:
         cursor.execute("""INSERT INTO Configuracoes (id, link_sistema, usuario_sistema, senha_sistema_criptografada, 
-                          email_smtp, email_usuario, email_senha_criptografada, email_ssl, email_porta) 
-                          VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                       (link, user_sis, senha_sis_crypt, smtp, user_email, senha_email_crypt, ssl, porta))
+                          email_smtp, email_usuario, email_senha_criptografada, email_ssl, email_porta,
+                          email_agendamento_tipo, email_intervalo_horas, email_proxima_execucao, email_ultima_execucao,
+                          email_destinatarios) 
+                          VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (
+                           link, user_sis, senha_sis_crypt, smtp, user_email, senha_email_crypt, ssl, porta,
+                           agendamento_tipo, intervalo_horas, proxima_execucao, ultima_execucao,
+                           str(destinatarios or '').strip(),
+                       ))
     conn.commit()
     conn.close()
     return True, "Configurações salvas com segurança!"
@@ -403,34 +473,100 @@ def carregar_configuracoes():
         return {
             "link": row[1] or "", "user_sis": row[2] or "", "senha_sis": senha_sis,
             "smtp": row[4] or "", "user_email": row[5] or "", "senha_email": senha_email,
-            "ssl": row[7] if row[7] is not None else 1, "porta": row[8] or ""
+            "ssl": row[7] if row[7] is not None else 1, "porta": row[8] or "",
+            "agendamento_tipo": row[9] or "", "intervalo_horas": row[10] or 1,
+            "proxima_execucao": row[11] or "", "ultima_execucao": row[12] or "",
+            "destinatarios": row[13] or "",
         }
     return None
 
-# --- Filtros ---
-def salvar_filtros(mes, ano):
+
+def atualizar_agendamento_email(tipo='', intervalo_horas=1, proxima_execucao='', ultima_execucao=None):
     try:
         conn = sqlite3.connect('sistema_automacao.db')
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM filtros_salvos") 
-        cursor.execute("INSERT INTO filtros_salvos (mes, ano) VALUES (?, ?)", (mes, ano))
+        if ultima_execucao is None:
+            cursor.execute(
+                '''UPDATE Configuracoes
+                   SET email_agendamento_tipo = ?, email_intervalo_horas = ?, email_proxima_execucao = ?
+                   WHERE id = 1''',
+                (tipo, intervalo_horas, proxima_execucao),
+            )
+        else:
+            cursor.execute(
+                '''UPDATE Configuracoes
+                   SET email_agendamento_tipo = ?, email_intervalo_horas = ?,
+                       email_proxima_execucao = ?, email_ultima_execucao = ?
+                   WHERE id = 1''',
+                (tipo, intervalo_horas, proxima_execucao, ultima_execucao),
+            )
         conn.commit()
         conn.close()
-        return True, "Período padrão salvo com sucesso!"
+        return True
     except Exception as e:
-        return False, f"Erro ao salvar filtros: {e}"
+        print(f"Erro ao atualizar agendamento de e-mail: {e}")
+        return False
+
+# --- Filtros ---
+def salvar_filtros(mes, ano, cod_filial='', cod_unidade_embarque='', ultimos_30_dias=False):
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM filtros_salvos')
+        cursor.execute(
+            '''INSERT INTO filtros_salvos (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias)
+               VALUES (?, ?, ?, ?, ?)''',
+            (
+                mes,
+                ano,
+                str(cod_filial or '').strip(),
+                str(cod_unidade_embarque or '').strip(),
+                1 if ultimos_30_dias else 0,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return True, 'Período e códigos de filial/unidade salvos com sucesso!'
+    except Exception as e:
+        return False, f'Erro ao salvar filtros: {e}'
+
 
 def carregar_filtros():
     try:
         conn = sqlite3.connect('sistema_automacao.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT mes, ano FROM filtros_salvos ORDER BY id DESC LIMIT 1")
+        cursor.execute(
+            '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias
+               FROM filtros_salvos ORDER BY id DESC LIMIT 1''',
+        )
         resultado = cursor.fetchone()
         conn.close()
         if resultado:
-            return {"mes": resultado[0], "ano": resultado[1]}
+            return {
+                'mes': resultado[0],
+                'ano': resultado[1],
+                'cod_filial': resultado[2] or '',
+                'cod_unidade_embarque': resultado[3] or '',
+                'ultimos_30_dias': bool(resultado[4]),
+            }
         return None
-    except:
+    except Exception:
+        try:
+            conn = sqlite3.connect('sistema_automacao.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT mes, ano, cod_filial, cod_unidade_embarque FROM filtros_salvos ORDER BY id DESC LIMIT 1')
+            resultado = cursor.fetchone()
+            conn.close()
+            if resultado:
+                return {
+                    'mes': resultado[0],
+                    'ano': resultado[1],
+                    'cod_filial': (resultado[2] or '') if len(resultado) > 2 else '',
+                    'cod_unidade_embarque': (resultado[3] or '') if len(resultado) > 3 else '',
+                    'ultimos_30_dias': False,
+                }
+        except Exception:
+            pass
         return None
 
 # --- Notas Raspadas (Para a Dashboard) ---
@@ -445,13 +581,14 @@ def salvar_nota_raspada(dados_nota):
             return False
 
         cursor.execute('''
-            INSERT INTO notas_raspadas (status, fornecedor, num_nota, data_em, valor, sit_nfe, chave_nfe, filial, user_ins, codigo_interno, erro_importacao, observacao_nfe)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO notas_raspadas (status, fornecedor, num_nota, data_em, valor, sit_nfe, chave_nfe, filial, user_ins, codigo_interno, erro_importacao, observacao_nfe, data_insercao)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             dados_nota.get('status', ''), dados_nota.get('fornecedor', ''), dados_nota.get('num_nota', ''), 
             dados_nota.get('data_em', ''), dados_nota.get('valor', ''), dados_nota.get('sit_nfe', ''), 
             dados_nota.get('chave_nfe', ''), dados_nota.get('filial', ''), dados_nota.get('user_ins', ''),
-            dados_nota.get('codigo_interno', ''), dados_nota.get('erro_importacao', ''), dados_nota.get('observacao_nfe', '')
+            dados_nota.get('codigo_interno', ''), dados_nota.get('erro_importacao', ''), dados_nota.get('observacao_nfe', ''),
+            dados_nota.get('data_insercao') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         ))
         conn.commit()
         conn.close()
@@ -460,22 +597,75 @@ def salvar_nota_raspada(dados_nota):
         print(f"Erro ao salvar nota no banco: {e}")
         return False
 
-def atualizar_nota_raspada(dados_nota):
+MSG_ERRO_ARQUIVO_INDISPONIVEL = (
+    'Arquivo indisponível para download (Cancelada/Rejeitada)'
+)
+
+
+def texto_indica_arquivo_indisponivel(texto):
+    """True se o retorno SEFAZ/erro for cancelada/rejeitada/indisponível."""
+    if not texto:
+        return False
+    tl = str(texto).lower()
+    if 'indispon' in tl:
+        return True
+    if 'cancelad' in tl and ('arquivo' in tl or 'download' in tl or 'nfe' in tl):
+        return True
+    if 'rejeit' in tl and ('arquivo' in tl or 'download' in tl or '656' in tl):
+        return True
+    return False
+
+
+def nota_erro_arquivo_indisponivel(erro_importacao):
+    """True se a nota já foi gravada com o erro padrão de arquivo indisponível."""
+    if not erro_importacao:
+        return False
+    if erro_importacao.strip() == MSG_ERRO_ARQUIVO_INDISPONIVEL:
+        return True
+    return texto_indica_arquivo_indisponivel(erro_importacao)
+
+
+def registrar_erro_nota_painel(dados_nota, erro_msg):
+    """Grava status Erro no banco e no dict da nota (dashboard / painel da aplicação)."""
+    msg = (erro_msg or 'Erro no processamento')[:500]
+    dados_nota['status'] = 'Erro'
+    dados_nota['erro_importacao'] = msg
+    dados_nota['codigo_interno'] = ''
+    if not atualizar_nota_raspada(dados_nota):
+        salvar_nota_raspada(dados_nota)
+    return True
+
+
+def atualizar_nota_raspada(dados_nota, arquivar_automatico=False):
     try:
         conn = sqlite3.connect('sistema_automacao.db')
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE notas_raspadas 
-            SET status = ?, codigo_interno = ?, erro_importacao = ?, observacao_nfe = ?
-            WHERE chave_nfe = ?
-        ''', (
-            dados_nota.get('status', ''),
-            dados_nota.get('codigo_interno', ''),
-            dados_nota.get('erro_importacao', ''),
-            dados_nota.get('observacao_nfe', ''),
-            dados_nota.get('chave_nfe', '')
-        ))
+        if arquivar_automatico:
+            cursor.execute('''
+                UPDATE notas_raspadas
+                SET status = ?, codigo_interno = ?, erro_importacao = ?,
+                    observacao_nfe = ?, nfe_arquiva = ?
+                WHERE chave_nfe = ?
+            ''', (
+                dados_nota.get('status', ''),
+                dados_nota.get('codigo_interno', ''),
+                dados_nota.get('erro_importacao', ''),
+                dados_nota.get('observacao_nfe', ''),
+                '☑',
+                dados_nota.get('chave_nfe', ''),
+            ))
+        else:
+            cursor.execute('''
+                UPDATE notas_raspadas
+                SET status = ?, codigo_interno = ?, erro_importacao = ?, observacao_nfe = ?
+                WHERE chave_nfe = ?
+            ''', (
+                dados_nota.get('status', ''),
+                dados_nota.get('codigo_interno', ''),
+                dados_nota.get('erro_importacao', ''),
+                dados_nota.get('observacao_nfe', ''),
+                dados_nota.get('chave_nfe', ''),
+            ))
         conn.commit()
         conn.close()
         return True
@@ -739,6 +929,84 @@ def atualizar_arquiva_nota(chave_nfe, valor_arquiva):
         return False
 
 
+def nota_erro_download_permanente(chave_nfe='', num_nota=''):
+    """Erro de download/XML já registrado — não tentar baixar de novo."""
+    chave = (chave_nfe or '').strip()
+    num = str(num_nota or '').strip()
+    if not chave and not num:
+        return False
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        c = conn.cursor()
+        if chave:
+            c.execute(
+                'SELECT status, erro_importacao FROM notas_raspadas WHERE chave_nfe = ?',
+                (chave,),
+            )
+        else:
+            c.execute(
+                '''SELECT status, erro_importacao FROM notas_raspadas
+                   WHERE num_nota = ? ORDER BY id DESC LIMIT 1''',
+                (num,),
+            )
+        row = c.fetchone()
+        conn.close()
+        if not row or str(row[0] or '').strip().upper() != 'ERRO':
+            return False
+        erro = str(row[1] or '')
+        if nota_erro_arquivo_indisponivel(erro):
+            return True
+        el = erro.lower()
+        marcadores = (
+            'sefaz', 'download', 'tentativas', 'consumo indevido', 'indispon',
+            'rejeicao', 'rejeição', 'nao retornou', 'não retornou',
+        )
+        return any(m in el for m in marcadores)
+    except Exception as e:
+        print(f'Erro ao verificar download permanente: {e}')
+        return False
+
+
+def nota_encerrada_robo(chave_nfe='', num_nota=''):
+    """
+    Nota já tratada pelo robô: importada com código (finalizou) ou erro gravado.
+    Evita ficar clicando Importar na mesma linha do painel.
+    """
+    chave = (chave_nfe or '').strip()
+    num = str(num_nota or '').strip()
+    if not chave and not num:
+        return False, ''
+    try:
+        conn = sqlite3.connect('sistema_automacao.db')
+        c = conn.cursor()
+        if chave:
+            c.execute(
+                'SELECT status, codigo_interno, erro_importacao FROM notas_raspadas WHERE chave_nfe = ?',
+                (chave,),
+            )
+        else:
+            c.execute(
+                '''SELECT status, codigo_interno, erro_importacao FROM notas_raspadas
+                   WHERE num_nota = ? ORDER BY id DESC LIMIT 1''',
+                (num,),
+            )
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return False, ''
+        status = str(row[0] or '').strip().upper()
+        codigo = str(row[1] or '').strip()
+        erro = str(row[2] or '').strip()
+        if status == 'IMPORTADO' and codigo:
+            return True, f'importada (cód. {codigo})'
+        if status == 'ERRO' and erro:
+            return True, 'erro registrado'
+        return False, ''
+    except Exception as e:
+        print(f'Erro ao verificar nota encerrada: {e}')
+        return False, ''
+
+
 def verificar_nota_arquiva(chave_nfe):
     """True se no painel a nota está arquivada (exceto Importado/Processado)."""
     if not chave_nfe or not str(chave_nfe).strip():
@@ -893,9 +1161,11 @@ def carregar_codigos_relatorios():
     conn.close()
     if row:
         dados = dict(row)
+        dados['rel_veiculo'] = str(dados.get('rel_veiculo') or '').strip()
+        dados['rel_item'] = str(dados.get('rel_item') or '').strip()
         dados['cod_grupo_item'] = str(dados.get('cod_grupo_item') or '').strip()
         return dados
-    return {'rel_veiculo': '117', 'rel_item': '118', 'cod_grupo_item': ''}
+    return {'rel_veiculo': '', 'rel_item': '', 'cod_grupo_item': ''}
 
 
 def carregar_codigo_grupo_item_padrao():
@@ -903,7 +1173,7 @@ def carregar_codigo_grupo_item_padrao():
     cfg = carregar_codigos_relatorios()
     return str(cfg.get('cod_grupo_item') or '').strip()
 
-def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""):
+def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota="", limite=None):
     """Busca todas as notas e usa um atalho seguro: se não houver filtro, mostra tudo!"""
     import sqlite3
     from datetime import datetime
@@ -923,7 +1193,12 @@ def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""
         # Se você não preencheu nada, ele devolve tudo na hora e ignora a filtragem!
         # ==========================================
         if not dt_ini and not dt_fim and not cod and not nota and status == "Todos":
-            return todas_notas
+            if limite in (None, "", "Todos"):
+                return todas_notas
+            try:
+                return todas_notas[:max(1, int(limite))]
+            except Exception:
+                return todas_notas
 
         notas_filtradas = []
 
@@ -974,7 +1249,12 @@ def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""
             # Se a nota passou em todos os filtros exigidos, ela entra na lista
             notas_filtradas.append(r)
 
-        return notas_filtradas
+        if limite in (None, "", "Todos"):
+            return notas_filtradas
+        try:
+            return notas_filtradas[:max(1, int(limite))]
+        except Exception:
+            return notas_filtradas
 
     except Exception as e:
         print(f"Erro ao buscar/filtrar notas: {e}")

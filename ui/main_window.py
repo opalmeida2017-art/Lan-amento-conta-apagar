@@ -10,10 +10,13 @@ from ui.aba_veiculos import AbaVeiculos
 from controllers.ctrl_veiculos import VeiculosController
 from ui.aba_itens import AbaItens
 from controllers.ctrl_itens import ItensController
+from ui.aba_importa_xml import AbaImportaXML
+from controllers.ctrl_importa_xml import ImportaXMLController
 from ui.aba_execucao import AbaExecucao
 from controllers.ctrl_execucao import ExecucaoController
 from ui.aba_filtros import AbaFiltros
 from controllers.ctrl_filtros import FiltrosController
+from ui.aba_logs import AbaLogs
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -25,7 +28,42 @@ class MainWindow(ctk.CTk):
         
         self.title("Sistema de Automação NFe - Enterprise")
         self.geometry("400x550")
-        self.eval('tk::PlaceWindow . center') 
+        self.eval('tk::PlaceWindow . center')
+        self.after(0, self._agendar_maximizacao)
+
+    def _agendar_maximizacao(self):
+        for atraso in (0, 120, 350):
+            self.after(atraso, self._maximizar_janela)
+
+    def _maximizar_janela(self):
+        try:
+            self.deiconify()
+        except Exception:
+            pass
+
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+
+        try:
+            self.state("zoomed")
+            return
+        except Exception:
+            pass
+
+        try:
+            self.attributes("-zoomed", True)
+            return
+        except Exception:
+            pass
+
+        try:
+            largura = self.winfo_screenwidth()
+            altura = self.winfo_screenheight()
+            self.geometry(f"{largura}x{altura}+0+0")
+        except Exception:
+            pass
 
     def limpar_tela(self):
         """Remove todos os widgets da janela para trocar de tela."""
@@ -39,6 +77,7 @@ class MainWindow(ctk.CTk):
     def mostrar_tela_token(self):
         self.limpar_tela()
         self.geometry("400x550")
+        self._agendar_maximizacao()
         
         lbl_titulo = ctk.CTkLabel(self, text="Sistema Bloqueado", font=("Arial", 24, "bold"), text_color="red")
         lbl_titulo.pack(pady=(50, 10))
@@ -57,6 +96,7 @@ class MainWindow(ctk.CTk):
         import database_setup as db
         self.limpar_tela()
         self.geometry("480x420")
+        self._agendar_maximizacao()
         ctk.CTkLabel(self, text="Sistema Bloqueado", font=("Arial", 24, "bold"), text_color="red").pack(pady=(40, 10))
         ctk.CTkLabel(
             self,
@@ -71,6 +111,7 @@ class MainWindow(ctk.CTk):
     def mostrar_tela_login(self):
         self.limpar_tela()
         self.geometry("400x550")
+        self._agendar_maximizacao()
         
         lbl_titulo = ctk.CTkLabel(self, text="Acesso ao Sistema", font=("Arial", 24, "bold"))
         lbl_titulo.pack(pady=(60, 30))
@@ -91,6 +132,8 @@ class MainWindow(ctk.CTk):
 
     def mostrar_tela_cadastro(self):
         self.limpar_tela()
+        self.geometry("400x550")
+        self._agendar_maximizacao()
         lbl_titulo = ctk.CTkLabel(self, text="Cadastrar Operador", font=("Arial", 24, "bold"))
         lbl_titulo.pack(pady=(40, 20))
         
@@ -121,20 +164,24 @@ class MainWindow(ctk.CTk):
     def mostrar_menu_principal(self):
         self.limpar_tela()
         self.geometry("980x880") 
-        self.eval('tk::PlaceWindow . center')
+        self._agendar_maximizacao()
         
         # Criar a Tabview Principal
         self.tabview = ctk.CTkTabview(self, width=920, height=800)
-        self.tabview.pack(pady=20, padx=20)
+        self.tabview.pack(pady=12, padx=12, fill="both", expand=True)
         
         # Adicionar as Abas de Nível Superior
         aba_painel_robo = self.tabview.add("Painel do Robô")
         aba_configuracoes = self.tabview.add("Configurações do Sistema")
+        aba_logs = self.tabview.add("Logs do Robô")
         
         # 1. MONTAR ABA DE CONFIGURAÇÕES (Componentizada)
-        ctrl_config = ConfigController()
+        ctrl_config = ConfigController(app_controller=self.controller)
         self.aba_config = AbaConfig(master=aba_configuracoes, controller=ctrl_config)
         self.aba_config.pack(fill="both", expand=True)
+
+        self.aba_logs = AbaLogs(master=aba_logs)
+        self.aba_logs.pack(fill="both", expand=True)
 
         # 2. MONTAR O PAINEL DO ROBÔ (Que contém as sub-abas)
         self.montar_painel_do_robo(aba_painel_robo)
@@ -144,14 +191,17 @@ class MainWindow(ctk.CTk):
         lbl_titulo = ctk.CTkLabel(container, text="Dashboard da Automação", font=("Arial", 22, "bold"), text_color="#3b8ed0")
         lbl_titulo.pack(pady=(10, 5))
 
-        self.sub_tabview = ctk.CTkTabview(container, width=900, height=680)
+        self.sub_tabview = ctk.CTkTabview(
+            container, width=900, height=680, command=self._ao_trocar_sub_aba,
+        )
         self.sub_tabview.pack(pady=5, padx=10, fill="both", expand=True)
         
         # Criar as áreas para cada sub-aba
         tab_exec = self.sub_tabview.add("Execução e Notas")
-        tab_filtros = self.sub_tabview.add("Filtros de Data")
+        tab_filtros = self.sub_tabview.add("Parâmetros ERP")
         tab_veiculos = self.sub_tabview.add("Veículos Ativos")
         tab_itens = self.sub_tabview.add("Itens")
+        tab_importa_xml = self.sub_tabview.add("Importa XML")
         
         # --- PLUGAR ABA EXECUÇÃO ---
         ctrl_exec = ExecucaoController(app_controller=self.controller)
@@ -174,3 +224,21 @@ class MainWindow(ctk.CTk):
         ctrl_itens = ItensController()
         self.aba_itens = AbaItens(master=tab_itens, controller=ctrl_itens)
         self.aba_itens.pack(fill="both", expand=True)
+
+        ctrl_importa_xml = ImportaXMLController(app_controller=self.controller)
+        self.aba_importa_xml = AbaImportaXML(master=tab_importa_xml, controller=ctrl_importa_xml)
+        self.aba_importa_xml.pack(fill="both", expand=True)
+        self.controller.view_importa_xml = self.aba_importa_xml
+
+    def _ao_trocar_sub_aba(self):
+        """Atualiza a tabela ao abrir Veículos ou Itens."""
+        try:
+            aba = self.sub_tabview.get()
+        except Exception:
+            return
+        if aba == "Veículos Ativos" and hasattr(self, "aba_veiculos"):
+            self.aba_veiculos.atualizar_tabela()
+        elif aba == "Itens" and hasattr(self, "aba_itens"):
+            self.aba_itens._grupos_disponiveis = self.aba_itens.controller.obter_grupos_unicos()
+            self.aba_itens.filtro_grupo.atualizar_valores(self.aba_itens._grupos_disponiveis)
+            self.aba_itens.atualizar_tabela()

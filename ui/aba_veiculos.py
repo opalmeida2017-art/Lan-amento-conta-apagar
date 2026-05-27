@@ -12,6 +12,15 @@ class AbaVeiculos(ctk.CTkFrame):
         lbl_titulo = ctk.CTkLabel(self, text="Relação de Veículos Cadastrados no Banco", font=("Arial", 16, "bold"))
         lbl_titulo.pack(pady=(10, 5))
 
+        frame_topo = ctk.CTkFrame(self, fg_color="transparent")
+        frame_topo.pack(fill="x", padx=10, pady=(0, 5))
+        ctk.CTkLabel(frame_topo, text="Limite:").pack(side="left", padx=(0, 6))
+        self.filtro_limite = ctk.CTkComboBox(
+            frame_topo, width=90, values=["100", "200", "500", "1000", "Todos"],
+        )
+        self.filtro_limite.set("100")
+        self.filtro_limite.pack(side="left")
+
         frame_tabela = ctk.CTkFrame(self)
         frame_tabela.pack(pady=10, padx=10, fill="both", expand=True)
 
@@ -31,20 +40,34 @@ class AbaVeiculos(ctk.CTkFrame):
         self.tabela_veiculos.heading("tipo", text="Tipo (Vínculo)")
         self.tabela_veiculos.heading("atualizacao", text="Última Atualização")
         
-        self.tabela_veiculos.column("codigo", width=100, anchor="center")
-        self.tabela_veiculos.column("placa", width=120, anchor="center")
-        self.tabela_veiculos.column("tipo", width=200, anchor="w")
-        self.tabela_veiculos.column("atualizacao", width=160, anchor="center")
+        self.tabela_veiculos.column("codigo", width=90, anchor="center")
+        self.tabela_veiculos.column("placa", width=100, anchor="center")
+        self.tabela_veiculos.column("tipo", width=180, anchor="w")
+        self.tabela_veiculos.column("atualizacao", width=150, anchor="center")
 
         btn_atualizar = ctk.CTkButton(self, text="Atualizar Lista", font=("Arial", 12, "bold"), command=self.atualizar_tabela)
         btn_atualizar.pack(pady=10)
 
+        self.status_label = ctk.CTkLabel(self, text="Status: Aguardando...", text_color="gray")
+        self.status_label.pack(pady=(0, 10))
+
         self.atualizar_tabela()
+
+    def _obter_limite_linhas(self):
+        valor = self.filtro_limite.get().strip() if hasattr(self, 'filtro_limite') else "100"
+        if not valor or valor.lower() == "todos":
+            return None
+        try:
+            return max(1, int(valor))
+        except Exception:
+            self.filtro_limite.set("100")
+            return 100
 
     def atualizar_tabela(self):
         for item in self.tabela_veiculos.get_children():
             self.tabela_veiculos.delete(item)
             
-        veiculos = self.controller.obter_veiculos_banco()
+        veiculos = self.controller.obter_veiculos_banco(limite=self._obter_limite_linhas())
         for v in veiculos:
             self.tabela_veiculos.insert("", "end", values=(v['codVeiculo'], v['placa'], v['veiculoProprio'], v['ultima_atualizacao']))
+        self.status_label.configure(text=f"Status: exibindo {len(veiculos)} linha(s).", text_color="#3b8ed0")

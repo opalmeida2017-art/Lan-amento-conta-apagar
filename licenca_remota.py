@@ -151,6 +151,35 @@ def _montar_payload(instalacao_id, razao_social, ativado='sim'):
     }
 
 
+def _gravar_json_github(caminho, dados, mensagem_commit, branch=None):
+    """Cria ou atualiza o JSON da licença no GitHub."""
+    branch = branch or _branch_ativa()
+    sha = _obter_sha_existente(caminho, branch)
+    conteudo = json.dumps(dados, ensure_ascii=False, indent=2)
+    conteudo_b64 = base64.b64encode(conteudo.encode('utf-8')).decode('ascii')
+    url = (
+        f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}'
+        f'/contents/{_caminho_url(caminho)}'
+    )
+    corpo = {
+        'message': mensagem_commit,
+        'content': conteudo_b64,
+        'branch': branch,
+    }
+    if sha:
+        corpo['sha'] = sha
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(corpo).encode('utf-8'),
+        headers=_headers_api(),
+        method='PUT',
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status in (200, 201):
+            return True, 'Salvo no GitHub.'
+    return False, 'Falha ao salvar no GitHub.'
+
+
 def _ler_arquivo_licenca(caminho, branch):
     """Baixa e interpreta o JSON da licença no GitHub."""
     url = (
@@ -283,46 +312,30 @@ def registrar_instalacao(razao_social):
         return False, str(e), instalacao_id
 
     sha = _obter_sha_existente(caminho, branch)
-    ativado = 'sim'
+    ativado = 'não'
     if sha:
         existente = _ler_arquivo_licenca(caminho, branch)
         if existente and existente.get('ativado') is not None:
             ativado = existente.get('ativado')
+    elif instalacao_id:
+        existente = _ler_arquivo_licenca(f'{PASTA_LICENCAS}/{instalacao_id}.json', branch)
+        if existente and existente.get('ativado') is not None:
+            ativado = existente.get('ativado')
 
-    conteudo = json.dumps(
-        _montar_payload(instalacao_id, razao, ativado=ativado),
-        ensure_ascii=False,
-        indent=2,
-    )
-    conteudo_b64 = base64.b64encode(conteudo.encode('utf-8')).decode('ascii')
-
-    url = (
-        f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}'
-        f'/contents/{_caminho_url(caminho)}'
-    )
-    corpo = {
-        'message': f'Licença {razao}',
-        'content': conteudo_b64,
-        'branch': branch,
-    }
-    if sha:
-        corpo['sha'] = sha
-
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(corpo).encode('utf-8'),
-        headers=_headers_api(),
-        method='PUT',
-    )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            if resp.status in (200, 201):
-                _remover_arquivos_licenca_antigos(branch, caminho, instalacao_id, info_antes)
-                db.registrar_upload_licenca_ok()
-                return True, (
-                    f'Licença salva como {nome_arquivo}.\n'
-                    f'(Arquivo antigo pelo ID foi removido do GitHub, se existia.)'
-                ), instalacao_id
+        ok_github, msg_github = _gravar_json_github(
+            caminho,
+            _montar_payload(instalacao_id, razao, ativado=ativado),
+            f'Licença {razao}',
+            branch,
+        )
+        if ok_github:
+            _remover_arquivos_licenca_antigos(branch, caminho, instalacao_id, info_antes)
+            db.registrar_verificacao_licenca(_valor_ativado_liberado(ativado))
+            return True, (
+                f'Licença salva como {nome_arquivo} com ativado = {ativado}.\n'
+                '(Arquivo antigo pelo ID foi removido do GitHub, se existia.)'
+            ), instalacao_id
     except urllib.error.HTTPError as e:
         try:
             det = e.read().decode('utf-8')
@@ -341,6 +354,47 @@ def registrar_instalacao(razao_social):
         return False, f'Erro de rede ao registrar licença: {e}', instalacao_id
 
     return False, 'Resposta inesperada do GitHub.', instalacao_id
+
+
+def garantir_registro_inicial_bloqueado():
+    """
+    Primeira execução: gera o ID local e cria no GitHub um arquivo bloqueado
+    (ativado = não). Mantém compatibilidade com instalações já registradas.
+    """
+    if not licenca_configurada():
+        return True, 'Licença remota desativada.', db.obter_ou_criar_instalacao_id()
+
+    instalacao_id = db.obter_ou_criar_instalacao_id()
+    info = db.carregar_instalacao_licenca()
+
+    try:
+        branch = _branch_ativa()
+    except Exception as e:
+        return False, f'Falha ao preparar licença remota: {e}', instalacao_id
+
+    caminho = _resolver_caminho_licenca() or f'{PASTA_LICENCAS}/{instalacao_id}.json'
+    try:
+        dados_existentes = _ler_arquivo_licenca(caminho, branch)
+        if not dados_existentes and instalacao_id:
+            alt_caminho, dados_existentes = _buscar_licenca_por_instalacao_id(instalacao_id, branch)
+            if alt_caminho:
+                caminho = alt_caminho
+        if dados_existentes:
+            return True, 'Licença remota já registrada para esta instalação.', instalacao_id
+
+        razao = (info.get('razao_social') or '').strip() or f'Instalação {instalacao_id}'
+        ok, msg = _gravar_json_github(
+            caminho,
+            _montar_payload(instalacao_id, razao, ativado='não'),
+            f'Bootstrap licença bloqueada {instalacao_id}',
+            branch,
+        )
+        if ok:
+            db.registrar_verificacao_licenca(False)
+            return True, 'Licença inicial criada no GitHub com ativado = não.', instalacao_id
+        return False, msg, instalacao_id
+    except Exception as e:
+        return False, f'Erro ao criar licença inicial bloqueada: {e}', instalacao_id
 
 
 def _recuperar_legado_bloqueio_rede():
@@ -460,31 +514,9 @@ def arquivo_licenca_existe(instalacao_id=None):
 def _salvar_json_github(caminho, dados, mensagem_commit, branch=None):
     """Grava JSON no GitHub (atualiza arquivo existente)."""
     branch = branch or _branch_ativa()
-    sha = _obter_sha_existente(caminho, branch)
-    if not sha:
+    if not _obter_sha_existente(caminho, branch):
         return False, 'Arquivo não encontrado no GitHub.'
-    conteudo = json.dumps(dados, ensure_ascii=False, indent=2)
-    conteudo_b64 = base64.b64encode(conteudo.encode('utf-8')).decode('ascii')
-    url = (
-        f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}'
-        f'/contents/{_caminho_url(caminho)}'
-    )
-    corpo = {
-        'message': mensagem_commit,
-        'content': conteudo_b64,
-        'branch': branch,
-        'sha': sha,
-    }
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(corpo).encode('utf-8'),
-        headers=_headers_api(),
-        method='PUT',
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        if resp.status in (200, 201):
-            return True, 'Salvo no GitHub.'
-    return False, 'Falha ao salvar no GitHub.'
+    return _gravar_json_github(caminho, dados, mensagem_commit, branch)
 
 
 def listar_todas_licencas():

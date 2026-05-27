@@ -7,22 +7,26 @@ class PainelFiltros(ctk.CTkFrame):
     def __init__(self, master, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
 
-        # Configura as 4 colunas para terem o mesmo tamanho
-        self.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self.layout_job = None
+        self.secoes = []
+        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(self, text="Configurações de Busca e Importação:", font=("Arial", 16, "bold")).grid(
-            row=0, column=0, columnspan=4, pady=(20, 10),
+        self.lbl_titulo = ctk.CTkLabel(
+            self, text="Parâmetros de Importação e ERP", font=("Arial", 16, "bold"),
         )
+        self.lbl_titulo.grid(row=0, column=0, sticky="w", pady=(14, 10), padx=10)
+
+        self.cards_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.cards_container.grid(row=1, column=0, sticky="nsew")
 
         # ==========================================
         # COLUNA 1: FILTROS DE DATA
         # ==========================================
-        frame_data = ctk.CTkFrame(self, fg_color="#2b2b2b")
-        frame_data.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
-        
+        frame_data = ctk.CTkFrame(self.cards_container, fg_color="#2b2b2b")
+        self.secoes.append(frame_data)
         ctk.CTkLabel(frame_data, text="📅 Período", font=("Arial", 14, "bold")).pack(pady=(15, 10))
-        
+
         self.meses_nomes = [
             "01 - Janeiro", "02 - Fevereiro", "03 - Março", "04 - Abril", 
             "05 - Maio", "06 - Junho", "07 - Julho", "08 - Agosto", 
@@ -37,11 +41,59 @@ class PainelFiltros(ctk.CTkFrame):
         self.combo_ano = ctk.CTkComboBox(frame_data, values=self.anos_lista, width=200, state="readonly")
         self.combo_ano.pack(pady=5, padx=20)
 
+        self.var_ultimos_30_dias = ctk.BooleanVar(value=False)
+        self.chk_ultimos_30_dias = ctk.CTkCheckBox(
+            frame_data,
+            text="Filtrar importações dos últimos 30 dias",
+            variable=self.var_ultimos_30_dias,
+            command=self._alternar_periodo_30_dias,
+        )
+        self.chk_ultimos_30_dias.pack(pady=(6, 4), padx=20, anchor="w")
+
+        self.lbl_dica_ultimos_30_dias = ctk.CTkLabel(
+            frame_data,
+            text="Ao marcar, o robô ignora Mês/Ano e consulta da data atual retroagindo 30 dias.",
+            justify="left",
+            text_color="#9ecbff",
+            font=("Arial", 11),
+            wraplength=220,
+        )
+        self.lbl_dica_ultimos_30_dias.pack(pady=(0, 10), padx=12, anchor="w")
+
+        ctk.CTkLabel(frame_data, text="Cod. Filial:").pack()
+        self.entry_cod_filial = ctk.CTkEntry(
+            frame_data, width=200, justify="center", placeholder_text="Ex: 1",
+        )
+        self.entry_cod_filial.pack(pady=5, padx=20)
+
+        ctk.CTkLabel(frame_data, text="Cod. Unid. Embarque:").pack()
+        self.entry_cod_unidade_embarque = ctk.CTkEntry(
+            frame_data, width=200, justify="center", placeholder_text="Ex: 1",
+        )
+        self.entry_cod_unidade_embarque.pack(pady=(5, 10), padx=20)
+
+        aviso_filial_ue = (
+            '⚠️ Com Cod. Filial e Cod. Unid. Embarque preenchidos e salvos, '
+            'TODAS as notas serão lançadas nessa filial e UE (um único CNPJ). '
+            'Durante o lançamento o robô altera só a UE do item; '
+            'ao abrir a nota ele aplica Filial + UE antes de finalizar. '
+            'Deixe em branco para o ERP escolher sozinho.'
+        )
+        self.lbl_aviso_filial_ue = ctk.CTkLabel(
+            frame_data,
+            text=aviso_filial_ue,
+            justify='left',
+            text_color='#f39c12',
+            font=('Arial', 11),
+            wraplength=220,
+        )
+        self.lbl_aviso_filial_ue.pack(pady=(0, 12), padx=12, anchor='w')
+
         # ==========================================
         # COLUNA 2: MODELOS DE LEITURA
         # ==========================================
-        frame_leitura = ctk.CTkFrame(self, fg_color="#2b2b2b")
-        frame_leitura.grid(row=1, column=1, padx=10, pady=5, sticky="nsew")
+        frame_leitura = ctk.CTkFrame(self.cards_container, fg_color="#2b2b2b")
+        self.secoes.append(frame_leitura)
 
         ctk.CTkLabel(frame_leitura, text="🔍 Placa e KM", font=("Arial", 14, "bold")).pack(pady=(15, 10))
 
@@ -56,8 +108,8 @@ class PainelFiltros(ctk.CTkFrame):
         # ==========================================
         # COLUNA 3: CÓDIGOS ERP (NOVO)
         # ==========================================
-        frame_codigos = ctk.CTkFrame(self, fg_color="#2b2b2b")
-        frame_codigos.grid(row=1, column=2, padx=10, pady=5, sticky="nsew")
+        frame_codigos = ctk.CTkFrame(self.cards_container, fg_color="#2b2b2b")
+        self.secoes.append(frame_codigos)
 
         ctk.CTkLabel(frame_codigos, text="⛽ Códigos Combustível", font=("Arial", 14, "bold")).pack(pady=(15, 5))
 
@@ -79,8 +131,8 @@ class PainelFiltros(ctk.CTkFrame):
         # ==========================================
         # COLUNA 4: GRUPO ITEM INDEFINIDO (1x5 — um campo editável)
         # ==========================================
-        frame_grupo = ctk.CTkFrame(self, fg_color="#2b2b2b")
-        frame_grupo.grid(row=1, column=3, padx=10, pady=5, sticky="nsew")
+        frame_grupo = ctk.CTkFrame(self.cards_container, fg_color="#2b2b2b")
+        self.secoes.append(frame_grupo)
 
         ctk.CTkLabel(frame_grupo, text="📦 Grupo Item", font=("Arial", 14, "bold")).pack(pady=(15, 5))
         ctk.CTkLabel(frame_grupo, text="INDEFINIDO (cadastro)", font=("Arial", 11)).pack(pady=(0, 8))
@@ -92,9 +144,65 @@ class PainelFiltros(ctk.CTkFrame):
         # BOTÃO SALVAR
         # ==========================================
         self.btn_salvar = ctk.CTkButton(self, text="💾 Salvar Configurações", fg_color="green", hover_color="darkgreen", command=self.salvar_filtros_no_banco)
-        self.btn_salvar.grid(row=2, column=0, columnspan=4, pady=25)
+        self.btn_salvar.grid(row=2, column=0, pady=(14, 10))
 
+        self.bind("<Configure>", self._agendar_layout_responsivo)
+        self.after(0, self._aplicar_layout_responsivo)
         self.carregar_dados_iniciais()
+
+    def _agendar_layout_responsivo(self, _event=None):
+        if self.layout_job:
+            self.after_cancel(self.layout_job)
+        self.layout_job = self.after(80, self._aplicar_layout_responsivo)
+
+    def _aplicar_layout_responsivo(self):
+        self.layout_job = None
+        largura = max(self.winfo_width(), 1)
+        if largura < 560:
+            colunas = 1
+        elif largura < 840:
+            colunas = 2
+        else:
+            colunas = 4
+
+        for idx in range(4):
+            self.cards_container.grid_columnconfigure(idx, weight=1 if idx < colunas else 0)
+
+        for idx, secao in enumerate(self.secoes):
+            secao.grid_forget()
+            secao.grid(
+                row=idx // colunas,
+                column=idx % colunas,
+                padx=8,
+                pady=5,
+                sticky="nsew",
+            )
+
+        largura_campo = 170 if colunas >= 4 else 220 if colunas == 2 else 280
+        largura_codigo = 140 if colunas >= 4 else 180 if colunas == 2 else 220
+        wrap = 220 if colunas >= 4 else 340 if colunas == 2 else 420
+
+        self.combo_mes.configure(width=largura_campo)
+        self.combo_ano.configure(width=largura_campo)
+        self.entry_cod_filial.configure(width=largura_campo)
+        self.entry_cod_unidade_embarque.configure(width=largura_campo)
+        self.entry_placas.configure(width=largura_campo)
+        self.entry_km.configure(width=largura_campo)
+        self.entry_etanol.configure(width=largura_codigo)
+        self.entry_gasolina.configure(width=largura_codigo)
+        self.entry_s10.configure(width=largura_codigo)
+        self.entry_s500.configure(width=largura_codigo)
+        self.entry_arla.configure(width=largura_codigo)
+        self.entry_cod_grupo_item.configure(width=largura_codigo)
+        self.lbl_aviso_filial_ue.configure(wraplength=wrap)
+        self.lbl_dica_ultimos_30_dias.configure(wraplength=wrap)
+        self.btn_salvar.configure(width=min(max(largura - 60, 240), 340))
+
+    def _alternar_periodo_30_dias(self):
+        usar_ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
+        estado_combos = "disabled" if usar_ultimos_30_dias else "readonly"
+        self.combo_mes.configure(state=estado_combos)
+        self.combo_ano.configure(state=estado_combos)
 
     # ==========================================
     # FUNÇÕES DE BANCO DE DADOS DA TELA
@@ -103,8 +211,17 @@ class PainelFiltros(ctk.CTkFrame):
         # Carrega Mês e Ano
         dados_salvos = db.carregar_filtros()
         if dados_salvos:
-            self.combo_mes.set(dados_salvos["mes"])
-            self.combo_ano.set(dados_salvos["ano"])
+            self.combo_mes.set(dados_salvos['mes'])
+            self.combo_ano.set(dados_salvos['ano'])
+            if dados_salvos.get('ultimos_30_dias'):
+                self.chk_ultimos_30_dias.select()
+            else:
+                self.chk_ultimos_30_dias.deselect()
+            self.entry_cod_filial.delete(0, 'end')
+            self.entry_cod_filial.insert(0, dados_salvos.get('cod_filial', ''))
+            self.entry_cod_unidade_embarque.delete(0, 'end')
+            self.entry_cod_unidade_embarque.insert(0, dados_salvos.get('cod_unidade_embarque', ''))
+        self._alternar_periodo_30_dias()
 
         # Carrega Modelos de Placa
         modelos_salvos_placa = db.obter_modelos_placa_string()
@@ -185,8 +302,13 @@ class PainelFiltros(ctk.CTkFrame):
             # =======================================================
             mes_escolhido = self.combo_mes.get()
             ano_escolhido = self.combo_ano.get()
-            
-            sucesso_f, msg_f = db.salvar_filtros(mes_escolhido, ano_escolhido)
+            cod_filial = self.entry_cod_filial.get().strip()
+            cod_unidade = self.entry_cod_unidade_embarque.get().strip()
+            ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
+
+            sucesso_f, msg_f = db.salvar_filtros(
+                mes_escolhido, ano_escolhido, cod_filial, cod_unidade, ultimos_30_dias,
+            )
             db.salvar_modelos_placa(modelos_placa_digitados)
             db.salvar_modelos_km(modelos_km_digitados) # Salva os KMs
             
@@ -198,13 +320,16 @@ class PainelFiltros(ctk.CTkFrame):
 
             cfg_rel = db.carregar_codigos_relatorios()
             db.salvar_codigos_relatorios(
-                cfg_rel.get('rel_veiculo', '117'),
-                cfg_rel.get('rel_item', '118'),
+                str(cfg_rel.get('rel_veiculo') or '').strip(),
+                str(cfg_rel.get('rel_item') or '').strip(),
                 self.entry_cod_grupo_item.get().strip(),
             )
             
             if sucesso_f:
-                messagebox.showinfo("✅ Sucesso", "Configurações, Placas e KMs salvos com sucesso!")
+                messagebox.showinfo(
+                    "✅ Sucesso",
+                    "Configurações salvas (período, últimos 30 dias, filial, unidade, placas e KMs).",
+                )
             else:
                 messagebox.showerror("❌ Erro", msg_f)
                 

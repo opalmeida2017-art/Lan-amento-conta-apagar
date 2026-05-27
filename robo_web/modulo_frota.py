@@ -6,25 +6,28 @@ from playwright.sync_api import sync_playwright
 import database_setup as db
 from robo_web.erp_lock import ERP_LOCK
 
-def baixar_e_importar_frota():
+
+def baixar_e_importar_frota(config_override=None):
     with ERP_LOCK:
-        _baixar_e_importar_frota_impl()
+        return _baixar_e_importar_frota_impl(config_override=config_override)
 
 
-def _baixar_e_importar_frota_impl():
+def _baixar_e_importar_frota_impl(config_override=None):
     # Puxa o código da tabela blindada
     try: config_rel = db.carregar_codigos_relatorios()
     except: config_rel = {}
-    codigo_relatorio = config_rel.get('rel_veiculo', '117')
-    if not codigo_relatorio: codigo_relatorio = "117"
+    codigo_relatorio = str(config_rel.get('rel_veiculo') or '').strip()
 
     # Agora o print fala a verdade e mostra o número que você digitou!
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Iniciando robô de sincronização de Frota (Relatório {codigo_relatorio})...")
     
-    config = db.carregar_configuracoes()
+    config = config_override or db.carregar_configuracoes()
     if not config or not config['link']:
         print("❌ Sistema não configurado. Impossível baixar frota.")
-        return
+        return False
+    if not codigo_relatorio:
+        print("❌ Código do relatório de Veículos não configurado. Ajuste em Parâmetros ERP.")
+        return False
 
     pasta_downloads = os.path.abspath("downloads_erp")
     os.makedirs(pasta_downloads, exist_ok=True)
@@ -96,30 +99,35 @@ def _baixar_e_importar_frota_impl():
             lista_veiculos = df.to_dict('records')
             db.sincronizar_frota_erp(lista_veiculos)
             print(f" 🌟 SUCESSO! {len(lista_veiculos)} veículos sincronizados.")
+            return True
                 
         except Exception as e:
             print(f"❌ ERRO NO MÓDULO FROTA: {e}")
+            return False
         finally:
             browser.close()
 
-def baixar_e_importar_itens():
+
+def baixar_e_importar_itens(config_override=None):
     with ERP_LOCK:
-        _baixar_e_importar_itens_impl()
+        return _baixar_e_importar_itens_impl(config_override=config_override)
 
 
-def _baixar_e_importar_itens_impl():
+def _baixar_e_importar_itens_impl(config_override=None):
     # Puxa o código da tabela blindada
     try: config_rel = db.carregar_codigos_relatorios()
     except: config_rel = {}
-    codigo_relatorio = config_rel.get('rel_item', '118')
-    if not codigo_relatorio: codigo_relatorio = "118"
+    codigo_relatorio = str(config_rel.get('rel_item') or '').strip()
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Iniciando robô de sincronização de Itens (Relatório {codigo_relatorio})...")
     
-    config = db.carregar_configuracoes()
+    config = config_override or db.carregar_configuracoes()
     if not config or not config['link']:
         print("❌ Sistema não configurado. Impossível baixar itens.")
-        return
+        return False
+    if not codigo_relatorio:
+        print("❌ Código do relatório de Itens não configurado. Ajuste em Parâmetros ERP.")
+        return False
 
     pasta_downloads = os.path.abspath("downloads_erp")
     os.makedirs(pasta_downloads, exist_ok=True)
@@ -185,8 +193,10 @@ def _baixar_e_importar_itens_impl():
             
             db.sincronizar_itens_erp(lista_itens)
             print(f" 🌟 SUCESSO! {len(lista_itens)} itens sincronizados.")
+            return True
                 
         except Exception as e:
             print(f"❌ ERRO NO MÓDULO ITENS: {e}")
+            return False
         finally:
             browser.close()

@@ -5,9 +5,9 @@ class ExecucaoController:
         self.app_controller = app_controller 
         self.view = None
 
-    def obter_notas_dashboard(self, dt_ini, dt_fim, cod, status, nota):
+    def obter_notas_dashboard(self, dt_ini, dt_fim, cod, status, nota, limite=100):
         try:
-            notas = db.listar_notas_filtradas(dt_ini, dt_fim, cod, status, nota)
+            notas = db.listar_notas_filtradas(dt_ini, dt_fim, cod, status, nota, limite=limite)
             # Garante que sempre retorne uma lista, mesmo que vazia
             return notas if notas is not None else []
         except Exception as e:
@@ -28,3 +28,8 @@ class ExecucaoController:
         
     def iniciar_robo(self):
         self.app_controller.iniciar_robo()
+
+    def iniciar_robo_para_nota(self, nota_alvo, compra_estoque=False):
+        self.app_controller.iniciar_robo(
+            nota_alvo=nota_alvo, compra_estoque=compra_estoque,
+        )

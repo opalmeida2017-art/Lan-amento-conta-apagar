@@ -55,30 +55,55 @@ def converter_modelo_para_regex(modelo):
     prefixo_regex = re.escape(prefixo).replace(r'\ ', r'\s*')
     return prefixo_regex + f"({mascara_regex})"
 
-def abortar_nota_com_erro(page, log, dados, erro_msg):
-    """Registra o erro, fecha a nota e volta para o painel principal"""
-    log(f"❌ ERRO ABORTANDO: {erro_msg}")
-    
-    dados['status'] = "Erro"
-    # Salva o erro específico no novo campo
-    dados['erro_importacao'] = erro_msg 
-    dados['codigo_interno'] = "" # Limpa se houver
-    
-    import database_setup as db
-    db.atualizar_nota_raspada(dados) 
-    
-    log("Clicando em Voltar e aguardando a página carregar...")
-    page.bring_to_front()
-    page.locator('input[value="Voltar"]').first.click(force=True)
-    
-    # Substitui o "time.sleep(3)" burro por uma espera inteligente do Playwright
+def obter_mensagem_erro_erp(page):
+    """Lê o texto do primeiro <li> de erro visível na tela do ERP."""
+    marcadores_erro = (
+        'inválido', 'invalido', 'bloqueado', 'favor selecionar',
+        'erro', 'não encontrad', 'nao encontrad', 'recusad',
+    )
+    ignorar = ('sucesso', 'alterados com sucesso', 'finalizada com sucesso')
     try:
-        # Aguarda até que a rede do navegador fique calma (ou seja, a página carregou)
-        page.wait_for_load_state("networkidle", timeout=20000)
-    except:
-        pass # Se passar de 20 segundos, ele ignora e tenta forçar a continuação
-        
+        itens = page.locator('li')
+        for i in range(itens.count()):
+            li = itens.nth(i)
+            try:
+                if not li.is_visible(timeout=300):
+                    continue
+            except Exception:
+                continue
+            texto = (li.text_content() or '').strip()
+            if not texto or len(texto) < 8:
+                continue
+            tl = texto.lower()
+            if any(x in tl for x in ignorar):
+                continue
+            if any(m in tl for m in marcadores_erro):
+                return texto
+    except Exception:
+        pass
+    return ''
+
+
+def voltar_ao_painel_nfe(page, log):
+    """Fecha a tela da nota e volta ao painel NFe."""
+    log('Clicando em Voltar e aguardando a página carregar...')
+    page.bring_to_front()
+    btn = page.locator('input[value="Voltar"]')
+    if btn.count() > 0:
+        btn.first.click(force=True)
+    try:
+        page.wait_for_load_state('networkidle', timeout=20000)
+    except Exception:
+        pass
     time.sleep(1.5)
+
+
+def abortar_nota_com_erro(page, log, dados, erro_msg):
+    """Registra o erro no painel (banco) e volta ao painel NFe."""
+    log(f'❌ ERRO ABORTANDO: {erro_msg}')
+    import database_setup as db
+    db.registrar_erro_nota_painel(dados, erro_msg)
+    voltar_ao_painel_nfe(page, log)
     
 def converter_modelo_km_para_regex(modelo):
     """Transforma 'HIDRO: 1' em uma regra Regex para o robô extrair o KM"""

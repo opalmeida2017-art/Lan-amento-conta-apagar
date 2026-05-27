@@ -6,11 +6,22 @@ from playwright.sync_api import sync_playwright
 import database_setup as db
 
 def baixar_e_importar_itens():
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Iniciando robô de sincronização de Itens (Relatório 118)...")
+    try:
+        cfg_rel = db.carregar_codigos_relatorios()
+    except Exception:
+        cfg_rel = {}
+    codigo_relatorio = str(cfg_rel.get('rel_item') or '').strip()
+    print(
+        f"\n[{datetime.now().strftime('%H:%M:%S')}] "
+        f"Iniciando robô de sincronização de Itens (Relatório {codigo_relatorio or 'não configurado'})..."
+    )
     
     config = db.carregar_configuracoes()
     if not config or not config['link']:
         print("❌ Sistema não configurado. Impossível baixar itens.")
+        return
+    if not codigo_relatorio:
+        print("❌ Código do relatório de Itens não configurado. Ajuste em Parâmetros ERP.")
         return
 
     pasta_downloads = os.path.abspath("downloads_erp")
@@ -39,15 +50,15 @@ def baixar_e_importar_itens():
             page.locator('text="Cadastro de Exportações"').first.click()
             page.wait_for_load_state("networkidle")
             
-            # 3. BUSCANDO RELATÓRIO 118 (ITENS)
-            print(" -> Pesquisando relatório 118...")
+            # 3. BUSCANDO RELATÓRIO DE ITENS CONFIGURADO
+            print(f" -> Pesquisando relatório {codigo_relatorio}...")
             campo_codigo = page.locator('text=Código:').locator('xpath=./following::input[1]')
-            campo_codigo.fill("118")
+            campo_codigo.fill(codigo_relatorio)
             page.locator('img[src*="search"], img[src*="lupa"], input[type="image"]').first.click()
             
-            page.wait_for_selector("td:has-text('118')", timeout=15000)
-            # Clica no link de detalhe/edição do relatório 118
-            link_resultado = page.locator("td:has-text('118')").locator("xpath=./following-sibling::td[1]").locator("a")
+            page.wait_for_selector(f"td:has-text('{codigo_relatorio}')", timeout=15000)
+            # Clica no link de detalhe/edição do relatório configurado
+            link_resultado = page.locator(f"td:has-text('{codigo_relatorio}')").locator("xpath=./following-sibling::td[1]").locator("a")
             link_resultado.evaluate("node => node.click()")
             page.wait_for_load_state("networkidle")
             
@@ -64,7 +75,7 @@ def baixar_e_importar_itens():
             
             # 5. GERANDO E BAIXANDO (Itens geralmente não precisam de filtros de data)
             print(" -> Solicitando geração do arquivo de itens...")
-            # Clica no botão Filtrar/Gerar da tela 118
+            # Clica no botão Filtrar/Gerar da tela configurada
             btn_gerar = nova_aba.locator('input[id*="filtrar"], input[value="Gerar"], input[value="Filtrar"]').first
             btn_gerar.click(force=True, no_wait_after=True)
             
@@ -79,7 +90,7 @@ def baixar_e_importar_itens():
             with nova_aba.expect_download(timeout=60000) as download_info:
                 selector_link.click()
             download_info.value.save_as(caminho_arquivo)
-            print(" ✅ Download do Relatório 118 concluído!")
+            print(f" ✅ Download do Relatório {codigo_relatorio} concluído!")
             
             # 6. PROCESSAMENTO COM PANDAS
             print(" -> Lendo a planilha de Itens e atualizando o banco de dados...")

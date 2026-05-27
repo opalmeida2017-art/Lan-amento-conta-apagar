@@ -27,7 +27,7 @@ def iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, log_callback, 
                     headless=False,
                     channel="chrome",
                     args=["--start-maximized"],
-                )
+                )                                                   
                 context = browser.new_context(viewport={"width": 1300, "height": 850})
                 page = context.new_page()
 

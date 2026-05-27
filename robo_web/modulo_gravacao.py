@@ -1,12 +1,25 @@
 import time
 import re
 import database_setup as db
+from robo_web.filial_embarque import (
+    aplicar_filial_ue_tela_nota,
+    abrir_aba_dados_gerais_nota,
+    clicar_gravar_nota,
+    clicar_finalizar_nota,
+    localizar_checkbox_despesa_nota,
+    localizar_botao_importar_cp,
+    localizar_link_abrir_nota,
+    obter_codigos_para_nota,
+    processar_itens_nota_interna,
+)
 
 def finalizar_gravacao(page, log, dados):
+    cod_filial, cod_ue, aplicar_fixo = obter_codigos_para_nota(log)
+
     log("💾 Clicando em 'Importar para uma Conta a Pagar'...")
     
     # Localiza o botão de importar e clica
-    btn_importar = page.locator('input[id="formCad:importarCP"]')
+    btn_importar = localizar_botao_importar_cp(page)
     btn_importar.click()
     
     log("⏳ Aguardando processamento do ERP (Sucesso ou Erro)...")
@@ -66,9 +79,7 @@ def finalizar_gravacao(page, log, dados):
                 # OUTROS ERROS (BLOQUEIO, ETC)
                 if "bloqueado" in texto_lower or "inválido" in texto_lower or "selecionar novamente" in texto_lower:
                     log(f"⚠️ ERRO DETECTADO: {texto_erro}")
-                    dados['status'] = "Erro"
-                    dados['erro_importacao'] = texto_erro 
-                    db.atualizar_nota_raspada(dados)
+                    db.registrar_erro_nota_painel(dados, texto_erro)
 
                     log("⬅️ Clicando em Voltar...")
                     btn_voltar = page.locator('input[value="Voltar"]')
@@ -79,7 +90,7 @@ def finalizar_gravacao(page, log, dados):
         # =================================================================
         # 2. TENTA ACHAR O SUCESSO E PROCESSAR A FINALIZAÇÃO
         # =================================================================
-        link_sucesso = page.locator('a[id="formCad:linkAbrirNota"]')
+        link_sucesso = localizar_link_abrir_nota(page)
         if link_sucesso.count() > 0 and link_sucesso.first.is_visible():
             # ... (Mantenha o seu código de sucesso aqui igual ao anterior) ...
             texto_sucesso = link_sucesso.first.text_content()
@@ -102,17 +113,72 @@ def finalizar_gravacao(page, log, dados):
 
             if dados.get('codigo_negocio_veiculo') == "2":
                 log("   🚚 Veículo FRETE: Desmarcando flag 'Despesa'...")
-                nova_aba.evaluate('''() => {
-                    let checkbox = document.getElementById("formnota:Nota_despesa");
-                    if (checkbox && checkbox.checked) { checkbox.click(); }
-                }''')
+                checkbox_despesa = localizar_checkbox_despesa_nota(nova_aba)
+                try:
+                    if checkbox_despesa.count() > 0 and checkbox_despesa.is_checked():
+                        checkbox_despesa.click()
+                except Exception:
+                    pass
                 time.sleep(1.5)
-                nova_aba.locator('input[id="formnota:gravarnota"]').click()
+                clicar_gravar_nota(nova_aba, log)
                 try: nova_aba.locator('li', has_text="Dados alterados com sucesso").wait_for(state="visible", timeout=8000)
                 except: pass
 
-            log("   🏁 Clicando no ícone de Finalizar...")
-            nova_aba.locator('img[id="formnota:imgFinalizar"]').click()
+            if aplicar_fixo:
+                if not aplicar_filial_ue_tela_nota(nova_aba, log, cod_filial, cod_ue):
+                    msg = 'Não foi possível aplicar Filial/UE na tela principal da nota.'
+                    log(f'   ❌ {msg}')
+                    db.registrar_erro_nota_painel(dados, msg)
+                    try:
+                        nova_aba.close()
+                    except Exception:
+                        pass
+                    page.bring_to_front()
+                    btn_voltar = page.locator('input[value="Voltar"]')
+                    if btn_voltar.count() > 0 and btn_voltar.first.is_visible():
+                        btn_voltar.first.click(force=True)
+                    return False
+                if not processar_itens_nota_interna(nova_aba, log, cod_ue):
+                    msg = 'Não foi possível aplicar a UE em todos os itens da nota.'
+                    log(f'   ❌ {msg}')
+                    db.registrar_erro_nota_painel(dados, msg)
+                    try:
+                        nova_aba.close()
+                    except Exception:
+                        pass
+                    page.bring_to_front()
+                    btn_voltar = page.locator('input[value="Voltar"]')
+                    if btn_voltar.count() > 0 and btn_voltar.first.is_visible():
+                        btn_voltar.first.click(force=True)
+                    return False
+
+            if not abrir_aba_dados_gerais_nota(nova_aba, log):
+                msg = 'Não foi possível voltar para a aba 1. Dados Gerais antes de finalizar.'
+                log(f'   ❌ {msg}')
+                db.registrar_erro_nota_painel(dados, msg)
+                try:
+                    nova_aba.close()
+                except Exception:
+                    pass
+                page.bring_to_front()
+                btn_voltar = page.locator('input[value="Voltar"]')
+                if btn_voltar.count() > 0 and btn_voltar.first.is_visible():
+                    btn_voltar.first.click(force=True)
+                return False
+
+            if not clicar_finalizar_nota(nova_aba, log):
+                msg = 'Botão/ícone de Finalizar não encontrado na aba principal da nota.'
+                log(f'   ❌ {msg}')
+                db.registrar_erro_nota_painel(dados, msg)
+                try:
+                    nova_aba.close()
+                except Exception:
+                    pass
+                page.bring_to_front()
+                btn_voltar = page.locator('input[value="Voltar"]')
+                if btn_voltar.count() > 0 and btn_voltar.first.is_visible():
+                    btn_voltar.first.click(force=True)
+                return False
             
             try:
                 nova_aba.locator('li', has_text="finalizada com sucesso").wait_for(state="visible", timeout=10000)
@@ -129,4 +195,11 @@ def finalizar_gravacao(page, log, dados):
                 btn_voltar_extra.first.click(force=True)
             return True
 
+    db.registrar_erro_nota_painel(
+        dados, 'Falha ao importar para Conta a Pagar (tempo esgotado ou sem resposta do ERP).',
+    )
+    log('⬅️ Voltando ao painel após falha na importação...')
+    btn_voltar = page.locator('input[value="Voltar"]')
+    if btn_voltar.count() > 0 and btn_voltar.first.is_visible():
+        btn_voltar.first.click(force=True)
     return False

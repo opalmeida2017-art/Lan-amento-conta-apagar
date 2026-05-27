@@ -14,7 +14,7 @@ class ItensController:
             if grupo: grupos.add(grupo)
         return ["Todos"] + sorted(list(grupos))
 
-    def obter_itens_filtrados(self, cod="", grupo="Todos", descricao=""):
+    def obter_itens_filtrados(self, cod="", grupo="Todos", descricao="", limite=100):
         itens = db.obter_itens_erp()
         filtrados = []
         cod = cod.lower().strip()
@@ -29,8 +29,13 @@ class ItensController:
             if grupo != "Todos" and grupo.lower() != val_grupo.lower(): continue
             if descricao and descricao not in val_desc: continue
             filtrados.append(i)
-            
-        return filtrados
+
+        if limite in (None, "", "Todos"):
+            return filtrados
+        try:
+            return filtrados[:max(1, int(limite))]
+        except Exception:
+            return filtrados
 
     # ==========================================
     # LÓGICA DE MIGRAÇÃO COM O ROBÔ
