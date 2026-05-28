@@ -4,6 +4,7 @@ from email.message import EmailMessage
 from pathlib import Path
 import smtplib
 import tempfile
+from urllib.parse import urlparse
 
 import database_setup as db
 from ui.relatorio_execucao import salvar_relatorio_excel as salvar_relatorio_notas_excel
@@ -238,15 +239,39 @@ def gerar_anexos_relatorios():
 
 def _criar_cliente_smtp(smtp_host, porta, usar_ssl):
     porta_int = int(porta or 0)
-    if usar_ssl and porta_int == 465:
+    if porta_int == 465:
         return smtplib.SMTP_SSL(smtp_host, porta_int, timeout=30)
 
     cliente = smtplib.SMTP(smtp_host, porta_int, timeout=30)
     cliente.ehlo()
-    if usar_ssl:
+    # Porta 587 usa STARTTLS (submissão autenticada padrão).
+    if porta_int == 587 or usar_ssl:
         cliente.starttls()
         cliente.ehlo()
     return cliente
+
+
+def _normalizar_smtp_host_porta(smtp_host, porta):
+    host = str(smtp_host or "").strip()
+    porta_saida = str(porta or "").strip()
+    if not host:
+        return "", porta_saida
+
+    if "://" in host:
+        parsed = urlparse(host)
+        host = parsed.hostname or ""
+        if not porta_saida and parsed.port:
+            porta_saida = str(parsed.port)
+
+    host = host.split("/")[0].strip()
+    if ":" in host and host.count(":") == 1:
+        host_parte, porta_embutida = host.rsplit(":", 1)
+        if host_parte and porta_embutida.isdigit():
+            host = host_parte.strip()
+            if not porta_saida:
+                porta_saida = porta_embutida
+
+    return host, porta_saida
 
 
 def _normalizar_destinatarios(destinatarios_texto, remetente):
@@ -262,10 +287,13 @@ def _normalizar_destinatarios(destinatarios_texto, remetente):
 
 def enviar_relatorios_agendados(configuracao, referencia=None):
     cfg = configuracao or {}
-    smtp_host = str(cfg.get("smtp") or "").strip()
+    smtp_host, porta_normalizada = _normalizar_smtp_host_porta(
+        cfg.get("smtp"),
+        cfg.get("porta") or "",
+    )
     usuario = str(cfg.get("user_email") or "").strip()
     senha = str(cfg.get("senha_email") or "").strip()
-    porta = cfg.get("porta") or ""
+    porta = porta_normalizada
     usar_ssl = bool(cfg.get("ssl"))
     destinatarios = _normalizar_destinatarios(cfg.get("destinatarios"), usuario)
 
@@ -305,9 +333,34 @@ def enviar_relatorios_agendados(configuracao, referencia=None):
                 filename=caminho.name,
             )
 
-    with _criar_cliente_smtp(smtp_host, porta, usar_ssl) as cliente:
-        cliente.login(usuario, senha)
-        cliente.send_message(mensagem)
+    try:
+        with _criar_cliente_smtp(smtp_host, porta, usar_ssl) as cliente:
+            cliente.login(usuario, senha)
+            cliente.send_message(mensagem)
+    except smtplib.SMTPAuthenticationError as exc:
+        detalhe = ""
+        try:
+            detalhe = (exc.smtp_error or b"").decode("utf-8", errors="ignore")
+        except Exception:
+            detalhe = str(exc)
+
+        if "gmail" in smtp_host.lower():
+            raise RuntimeError(
+                "Falha de autenticação no Gmail SMTP.\n"
+                "Use senha de app do Google (16 caracteres), não a senha normal da conta.\n"
+                "Configuração recomendada: porta 465 com SSL marcado OU porta 587 com SSL desmarcado.\n\n"
+                f"Detalhe técnico: {detalhe or exc}"
+            ) from exc
+        raise RuntimeError(f"Falha de autenticação SMTP: {detalhe or exc}") from exc
+    except smtplib.SMTPNotSupportedError as exc:
+        raise RuntimeError(
+            "Servidor SMTP não suportou autenticação.\n"
+            "Verifique o campo SMTP sem http/https (ex: smtp.gmail.com) "
+            "e a combinação porta/SSL (465 com SSL marcado ou 587 com SSL desmarcado).\n\n"
+            f"Detalhe técnico: {exc}"
+        ) from exc
+    except smtplib.SMTPException as exc:
+        raise RuntimeError(f"Falha ao enviar e-mail via SMTP: {exc}") from exc
 
     return {
         "total_notas": anexos["total_notas"],

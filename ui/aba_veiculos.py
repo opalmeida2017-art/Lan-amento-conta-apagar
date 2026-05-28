@@ -45,8 +45,11 @@ class AbaVeiculos(ctk.CTkFrame):
         self.tabela_veiculos.column("tipo", width=180, anchor="w")
         self.tabela_veiculos.column("atualizacao", width=150, anchor="center")
 
-        btn_atualizar = ctk.CTkButton(self, text="Atualizar Lista", font=("Arial", 12, "bold"), command=self.atualizar_tabela)
-        btn_atualizar.pack(pady=10)
+        self.btn_atualizar = ctk.CTkButton(
+            self, text="Atualizar Lista", font=("Arial", 12, "bold"),
+            command=self._click_atualizar_lista,
+        )
+        self.btn_atualizar.pack(pady=10)
 
         self.status_label = ctk.CTkLabel(self, text="Status: Aguardando...", text_color="gray")
         self.status_label.pack(pady=(0, 10))
@@ -63,11 +66,40 @@ class AbaVeiculos(ctk.CTkFrame):
             self.filtro_limite.set("100")
             return 100
 
+    def _click_atualizar_lista(self):
+        self.btn_atualizar.configure(state="disabled")
+        self.status_label.configure(
+            text="Status: sincronizando frota com o ERP...",
+            text_color="#f39c12",
+        )
+        self.controller.sincronizar_frota_erp(ao_finalizar=self._finalizar_atualizacao)
+
+    def _finalizar_atualizacao(self):
+        self.atualizar_tabela()
+        self.btn_atualizar.configure(state="normal")
+
     def atualizar_tabela(self):
         for item in self.tabela_veiculos.get_children():
             self.tabela_veiculos.delete(item)
-            
+
         veiculos = self.controller.obter_veiculos_banco(limite=self._obter_limite_linhas())
         for v in veiculos:
-            self.tabela_veiculos.insert("", "end", values=(v['codVeiculo'], v['placa'], v['veiculoProprio'], v['ultima_atualizacao']))
-        self.status_label.configure(text=f"Status: exibindo {len(veiculos)} linha(s).", text_color="#3b8ed0")
+            self.tabela_veiculos.insert(
+                "", "end",
+                values=(
+                    v.get("codVeiculo", ""),
+                    v.get("placa", ""),
+                    v.get("veiculoProprio", ""),
+                    v.get("ultima_atualizacao", ""),
+                ),
+            )
+        if veiculos:
+            texto = f"Status: exibindo {len(veiculos)} linha(s)."
+            cor = "#3b8ed0"
+        else:
+            texto = (
+                "Status: nenhum veículo no banco. "
+                "Confira o código do relatório em Parâmetros ERP e clique em Atualizar Lista."
+            )
+            cor = "#f39c12"
+        self.status_label.configure(text=texto, text_color=cor)

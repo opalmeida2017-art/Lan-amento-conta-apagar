@@ -131,16 +131,16 @@ def _seguir_proxima_nota(page, log, memoria):
 
 
 def _ler_dado_linha(linha, seletor):
-    elemento = linha.locator(seletor)
-    if elemento.count() > 0:
-        try:
-            return (elemento.first.text_content(timeout=1500) or '').strip()
-        except Exception:
-            try:
-                return (elemento.first.inner_text(timeout=1500) or '').strip()
-            except Exception:
-                return ''
-    return ''
+    try:
+        elemento = linha.locator(seletor)
+        if elemento.count() > 0:
+            texto = elemento.text_content()
+            return texto.strip() if texto else ""
+    except Exception:
+        # Se a página ou navegador for fechado (TargetClosedError) durante a varredura,
+        # captura o erro e retorna string vazia para que o robô encerre suavemente.
+        pass
+    return ""
 
 
 def _id_nota_controle(dados, num_nota=''):
@@ -674,6 +674,8 @@ def _clicar_botao_download_nfe(page, log):
 
 
 def _registrar_erro_download_pular(dados, num_nota, msg, memoria, log):
+    dados = dict(dados or {})
+    dados['num_nota'] = str(num_nota or dados.get('num_nota') or '').strip()
     if db.texto_indica_arquivo_indisponivel(msg):
         db.registrar_erro_nota_painel(dados, db.MSG_ERRO_ARQUIVO_INDISPONIVEL)
         db.atualizar_nota_raspada(dados, arquivar_automatico=True)
@@ -768,7 +770,7 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
         if valor_unidade != '-' and select_unid_mestre.count() > 0:
             select_unid_mestre.select_option(value=valor_unidade)
             log(f'Filial e Unid. Emb. Mestre sincronizadas com Unidade {valor_unidade}')
-
+    
     campo_obs = localizar_observacao_nota_cp(page)
     memoria_obs = campo_obs.input_value() if campo_obs.count() > 0 else ''
     dados['observacao_nfe'] = memoria_obs # Guarda a observação da tela
@@ -835,7 +837,7 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
         resultado_veiculo, placas_extraidas = processar_veiculo(
             page, log, idx, memoria_obs, modelos_usuario,
         )
-
+        
         if not resultado_veiculo:
             campo_veic = page.locator(f'input[id="formCad:tableItemNota:{idx}:veiculoInput"]')
             valor_campo = campo_veic.input_value().strip() if campo_veic.count() > 0 else ''
@@ -883,8 +885,18 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
         
         dados['codigo_negocio_veiculo'] = codigo_negocio    
 
-        # 4. SEGUE A VIDA PARA KM E ITEM
-        processar_km(page, log, idx, memoria_obs)
+        # 4. KM obrigatório (exceto modo estoque)
+        km_ok = processar_km(page, log, idx, memoria_obs)
+        if not km_ok:
+            abortar_nota_com_erro(
+                page,
+                log,
+                dados,
+                f"KM não encontrado nas observações (Item {idx + 1}). "
+                "Ajuste os modelos de KM em Parâmetros ERP ou inclua o KM na observação.",
+            )
+            return False
+
         processar_cadastro_item(page, log, idx, item_block, codigo_negocio)
 
         # =======================================================================

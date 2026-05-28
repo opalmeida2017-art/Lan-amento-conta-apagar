@@ -1,5 +1,6 @@
 import customtkinter as ctk
 from tkinter import messagebox
+import app_version
 
 # ========================================================
 # IMPORTAÇÃO DOS COMPONENTES MODULARES (As peças de Lego)
@@ -26,7 +27,7 @@ class MainWindow(ctk.CTk):
         super().__init__()
         self.controller = controller # Referência ao AppController (O Cérebro)
         
-        self.title("Sistema de Automação NFe - Enterprise")
+        self.title(f"Sistema de Automação NFe - Enterprise ({app_version.versao_exibicao()})")
         self.geometry("400x550")
         self.eval('tk::PlaceWindow . center')
         self.after(0, self._agendar_maximizacao)
@@ -161,30 +162,66 @@ class MainWindow(ctk.CTk):
     # MENU PRINCIPAL (ORQUESTRAÇÃO DAS ABAS)
     # ============================================================
 
-    def mostrar_menu_principal(self):
+    def mostrar_menu_principal(self, apenas_configuracao=False):
         self.limpar_tela()
-        self.geometry("980x880") 
+        self.geometry("980x880")
         self._agendar_maximizacao()
-        
-        # Criar a Tabview Principal
-        self.tabview = ctk.CTkTabview(self, width=920, height=800)
+        self.modo_apenas_configuracao = bool(apenas_configuracao)
+
+        if apenas_configuracao:
+            frame_aviso = ctk.CTkFrame(self, fg_color="#3d1515")
+            frame_aviso.pack(fill="x", padx=12, pady=(12, 0))
+
+            linha_aviso = ctk.CTkFrame(frame_aviso, fg_color="transparent")
+            linha_aviso.pack(fill="x", padx=16, pady=12)
+
+            ctk.CTkLabel(
+                linha_aviso,
+                text="Sistema bloqueado — aguardando liberação da licença",
+                font=("Arial", 16, "bold"),
+                text_color="#ff8a80",
+            ).pack(side="left")
+
+            ctk.CTkButton(
+                linha_aviso,
+                text="Verificar licença",
+                width=140,
+                command=self.controller.tentar_revalidar_licenca,
+            ).pack(side="right")
+
+        self.tabview = ctk.CTkTabview(self, width=920, height=760 if apenas_configuracao else 800)
         self.tabview.pack(pady=12, padx=12, fill="both", expand=True)
-        
-        # Adicionar as Abas de Nível Superior
-        aba_painel_robo = self.tabview.add("Painel do Robô")
-        aba_configuracoes = self.tabview.add("Configurações do Sistema")
-        aba_logs = self.tabview.add("Logs do Robô")
-        
-        # 1. MONTAR ABA DE CONFIGURAÇÕES (Componentizada)
+
         ctrl_config = ConfigController(app_controller=self.controller)
-        self.aba_config = AbaConfig(master=aba_configuracoes, controller=ctrl_config)
-        self.aba_config.pack(fill="both", expand=True)
+
+        if apenas_configuracao:
+            aba_configuracoes = self.tabview.add("Configurações do Sistema")
+            self.aba_config = AbaConfig(
+                master=aba_configuracoes,
+                controller=ctrl_config,
+                modo_registro_licenca=True,
+            )
+            self.aba_config.pack(fill="both", expand=True)
+            self.tabview.set("Configurações do Sistema")
+            return
+
+        aba_painel_robo = self.tabview.add("Painel do Robô")
+        aba_logs = self.tabview.add("Logs do Robô")
+        aba_configuracoes = self.tabview.add("Configurações do Sistema")
 
         self.aba_logs = AbaLogs(master=aba_logs)
         self.aba_logs.pack(fill="both", expand=True)
 
-        # 2. MONTAR O PAINEL DO ROBÔ (Que contém as sub-abas)
+        self.aba_config = AbaConfig(
+            master=aba_configuracoes,
+            controller=ctrl_config,
+            modo_registro_licenca=False,
+        )
+        self.aba_config.pack(fill="both", expand=True)
+
         self.montar_painel_do_robo(aba_painel_robo)
+        self.tabview.set("Painel do Robô")
+        self.after(0, self._abrir_aba_execucao_inicial)
 
     def montar_painel_do_robo(self, container):
         """Cria as sub-abas dentro do Painel do Robô."""
@@ -229,6 +266,19 @@ class MainWindow(ctk.CTk):
         self.aba_importa_xml = AbaImportaXML(master=tab_importa_xml, controller=ctrl_importa_xml)
         self.aba_importa_xml.pack(fill="both", expand=True)
         self.controller.view_importa_xml = self.aba_importa_xml
+
+    def _abrir_aba_execucao_inicial(self):
+        """Ao liberar o sistema, foca Execução e Notas."""
+        try:
+            if hasattr(self, "sub_tabview"):
+                self.sub_tabview.set("Execução e Notas")
+        except Exception:
+            pass
+        if hasattr(self, "aba_execucao"):
+            try:
+                self.aba_execucao.atualizar_tabela_dashboard()
+            except Exception:
+                pass
 
     def _ao_trocar_sub_aba(self):
         """Atualiza a tabela ao abrir Veículos ou Itens."""

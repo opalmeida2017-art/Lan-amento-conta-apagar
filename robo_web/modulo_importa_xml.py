@@ -6,6 +6,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from .erp_lock import ERP_LOCK
+from .runtime_config import usar_headless
 from .utils import verificar_pagina_erp_ok
 
 
@@ -291,8 +292,8 @@ def iniciar_importacao_xml(config, itens_xml, log_callback=None, status_callback
     with ERP_LOCK:
         with sync_playwright() as p:
             browser = p.chromium.launch(
-                headless=False,
-                args=["--start-maximized"],
+                headless=usar_headless(),
+                channel="chrome",
             )
             context = browser.new_context(viewport={"width": 1380, "height": 900})
             page = context.new_page()

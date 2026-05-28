@@ -1,24 +1,32 @@
-import sqlite3
+import threading
+
+import database_setup as db
+from robo_web import modulo_frota
+
 
 class VeiculosController:
     def __init__(self):
         self.view = None
+        self._sincronizando = False
 
     def obter_veiculos_banco(self, limite=100):
-        try:
-            conn = sqlite3.connect('sistema_automacao.db')
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            sql = "SELECT codVeiculo, placa, veiculoProprio, ultima_atualizacao FROM frota_erp ORDER BY codVeiculo ASC"
-            if limite not in (None, "", "Todos"):
-                try:
-                    sql += f" LIMIT {max(1, int(limite))}"
-                except Exception:
-                    pass
-            cursor.execute(sql)
-            veiculos = cursor.fetchall()
-            conn.close()
-            return veiculos
-        except Exception as e:
-            print(f"Aguardando primeira leitura de frota... ({e})")
-            return []
+        return db.obter_frota_erp(limite=limite)
+
+    def sincronizar_frota_erp(self, ao_finalizar=None):
+        if self._sincronizando:
+            return False
+
+        def rodar():
+            self._sincronizando = True
+            try:
+                modulo_frota.baixar_e_importar_frota()
+            finally:
+                self._sincronizando = False
+                if self.view and ao_finalizar:
+                    try:
+                        self.view.after(0, ao_finalizar)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=rodar, daemon=True).start()
+        return True

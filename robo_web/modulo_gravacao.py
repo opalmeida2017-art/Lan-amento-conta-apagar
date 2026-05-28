@@ -100,7 +100,7 @@ def finalizar_gravacao(page, log, dados):
             dados['status'] = "Importado"
             dados['codigo_interno'] = codigo_interno
             dados['erro_importacao'] = ""
-            db.atualizar_nota_raspada(dados)
+            db.marcar_nota_importada_painel(dados)
 
             log(f"📝 Abrindo a nota {codigo_interno} para finalização...")
             

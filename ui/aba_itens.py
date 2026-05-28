@@ -68,6 +68,14 @@ class AbaItens(ctk.CTkFrame):
             fg_color="#b8860b", hover_color="#8a6508", command=self.abrir_popup_migracao,
         )
         self.btn_migrar.grid(row=1, column=2, columnspan=3, padx=(16, 5), pady=(0, 8), sticky="ew")
+        self.btn_atualizar_lista = ctk.CTkButton(
+            self.frame_filtros,
+            text="Atualizar Lista",
+            width=120,
+            font=("Arial", 12, "bold"),
+            command=self._click_atualizar_lista,
+        )
+        self.btn_atualizar_lista.grid(row=1, column=5, padx=(10, 5), pady=(0, 8), sticky="w")
         self.lbl_imprimir_relatorio = ctk.CTkLabel(
             self.frame_filtros,
             text="Imprimir Relatório",
@@ -241,6 +249,24 @@ class AbaItens(ctk.CTkFrame):
             text_color="#3b8ed0",
         )
 
+    def _click_atualizar_lista(self):
+        self.btn_atualizar_lista.configure(state="disabled")
+        self.status_label.configure(
+            text="Status: sincronizando itens com o ERP...",
+            text_color="#f39c12",
+        )
+        iniciado = self.controller.sincronizar_itens_erp(ao_finalizar=self._finalizar_atualizacao)
+        if not iniciado:
+            self.status_label.configure(
+                text="Status: sincronização de itens já está em andamento.",
+                text_color="#f39c12",
+            )
+            self.btn_atualizar_lista.configure(state="normal")
+
+    def _finalizar_atualizacao(self):
+        self.atualizar_tabela()
+        self.btn_atualizar_lista.configure(state="normal")
+
     def atualizar_tabela(self):
         for item in self.tabela_itens.get_children():
             self.tabela_itens.delete(item)
@@ -256,11 +282,23 @@ class AbaItens(ctk.CTkFrame):
         for i in itens_db:
             self.tabela_itens.insert(
                 "", "end",
-                values=(i['codItemD'], i['descGrupoImp'], i['descNegocioImp'], i['descricao']),
+                values=(
+                    i.get('codItemD', ''),
+                    i.get('descGrupoImp', ''),
+                    i.get('descNegocioImp', ''),
+                    i.get('descricao', ''),
+                ),
             )
-        self.status_label.configure(
-            text=f"Status: exibindo {len(itens_db)} linha(s).", text_color="#3b8ed0",
-        )
+        if itens_db:
+            texto = f"Status: exibindo {len(itens_db)} linha(s)."
+            cor = "#3b8ed0"
+        else:
+            texto = (
+                "Status: nenhum item no banco. "
+                "Confira o código do relatório em Parâmetros ERP e clique em Atualizar Lista."
+            )
+            cor = "#f39c12"
+        self.status_label.configure(text=texto, text_color=cor)
 
     def abrir_popup_migracao(self):
         grupo_atual = self.filtro_grupo.get().strip()

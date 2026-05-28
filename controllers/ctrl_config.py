@@ -1,7 +1,9 @@
 import database_setup as db
 import licenca_remota
 import threading
+import tempfile
 from tkinter import messagebox
+from pathlib import Path
 from agendamento_email import resumo_proximo_envio, enviar_relatorios_agendados
 import github_updater
 
@@ -20,6 +22,36 @@ class ConfigController:
 
     def carregar_instalacao_licenca(self):
         return db.carregar_instalacao_licenca()
+
+    def salvar_registro_transportadora(self, razao_social):
+        """Registra transportadora no GitHub e exibe o ID (modo bloqueado)."""
+        razao = (razao_social or '').strip()
+        if not razao:
+            messagebox.showwarning(
+                "Transportadora",
+                "Informe a razão social da transportadora.",
+            )
+            return False
+
+        iid = db.obter_ou_criar_instalacao_id()
+        ok, msg, iid = licenca_remota.registrar_instalacao(razao)
+
+        if self.view and hasattr(self.view, 'lbl_instalacao_id') and iid:
+            self.view.lbl_instalacao_id.configure(text=iid)
+
+        if ok:
+            messagebox.showinfo(
+                "Transportadora registrada",
+                f"Transportadora salva com sucesso.\n\n"
+                f"ID desta instalação:\n{iid}\n\n{msg}",
+            )
+        else:
+            messagebox.showerror(
+                "Falha ao registrar",
+                f"Não foi possível registrar no GitHub.\n\n"
+                f"ID local (anote para o suporte):\n{iid}\n\n{msg}",
+            )
+        return ok
 
     def salvar_configuracoes(self, campos_erp, campos_email, params, razao_social=''):
         tipo_agendamento = str(params[8] or '').strip().lower() if len(params) > 8 else ''
@@ -85,22 +117,41 @@ class ConfigController:
                         self.view.definir_estado_atualizacao(False)
 
                     if erro:
+                        caminho_log = Path(tempfile.gettempdir()) / "atualizacao_automacao_nfe.log"
                         if self.view and hasattr(self.view, "atualizar_status_atualizacao"):
                             self.view.atualizar_status_atualizacao(f"Falha na atualização: {erro}")
-                        messagebox.showerror("Atualização", f"Erro ao atualizar o sistema:\n{erro}")
+                        messagebox.showerror(
+                            "Atualização",
+                            f"Erro ao atualizar o sistema:\n{erro}\n\n"
+                            f"Log da troca:\n{caminho_log}",
+                        )
                         return
 
+                    versao_exibicao = (
+                        resultado.get("versao_exibicao")
+                        or github_updater.versao_exibicao_de(resultado.get("versao_sistema"))
+                    )
                     if self.view and hasattr(self.view, "atualizar_status_atualizacao"):
-                        self.view.atualizar_status_atualizacao(
-                            f"Nova versão pronta: {resultado.get('asset_name')}"
+                        texto_status = (
+                            f"Nova versão pronta: {versao_exibicao}"
+                            if versao_exibicao
+                            else f"Nova versão pronta: {resultado.get('asset_name')}"
                         )
+                        self.view.atualizar_status_atualizacao(texto_status)
 
+                    linha_versao = (
+                        f"Versão do sistema atualizada: {versao_exibicao}\n\n"
+                        if versao_exibicao
+                        else ""
+                    )
                     messagebox.showinfo(
                         "Atualização",
-                        "A nova versão foi baixada com sucesso.\n\n"
+                        "Atualização concluída com sucesso.\n\n"
+                        f"{linha_versao}"
                         f"Release: {resultado.get('release_name')}\n"
                         f"Arquivo: {resultado.get('asset_name')}\n\n"
-                        "O sistema será fechado para substituir o executável atual.",
+                        "Clique em OK para fechar o sistema.\n"
+                        "Depois, abra novamente manualmente pelo atalho/executável.",
                     )
 
                     if self.app_controller and getattr(self.app_controller, "view", None):

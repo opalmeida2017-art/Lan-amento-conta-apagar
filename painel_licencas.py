@@ -21,8 +21,8 @@ class PainelLicencas(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title('Painel de Licenças — local')
-        self.geometry('960x560')
-        self.minsize(800, 400)
+        self.geometry('1020x560')
+        self.minsize(860, 400)
 
         if not lr.licenca_configurada():
             messagebox.showerror(
@@ -37,7 +37,7 @@ class PainelLicencas(ctk.CTk):
         titulo.pack(fill='x', padx=12, pady=(12, 0))
         ctk.CTkLabel(
             titulo,
-            text='Painel de Licenças (roda no seu PC)',
+            text='Painel de Liberação (roda no seu PC)',
             font=('Arial', 18, 'bold'),
         ).pack(anchor='w')
         ctk.CTkLabel(
@@ -66,8 +66,12 @@ class PainelLicencas(ctk.CTk):
         cab = ctk.CTkFrame(self, fg_color='#333333')
         cab.pack(fill='x', padx=12, pady=(0, 4))
         for texto, w in (
-            ('Arquivo', 170), ('Razão social', 190), ('ID instalação', 200),
-            ('Ativado', 60), ('Status', 90), ('Ações', 170),
+            ('Data / hora · Transportadora', 300),
+            ('ID instalação', 200),
+            ('Ativado', 60),
+            ('Status', 90),
+            ('Ações', 170),
+            ('', 44),
         ):
             ctk.CTkLabel(cab, text=texto, font=('Arial', 11, 'bold'), width=w).pack(
                 side='left', padx=4, pady=6,
@@ -80,6 +84,40 @@ class PainelLicencas(ctk.CTk):
         self.status.pack(pady=(0, 12))
 
         self.after(200, self.carregar_lista)
+
+    def _montar_coluna_data_transportadora(self, parent, lic):
+        data_txt = lr.formatar_data_registro_exibicao(lic.get('data_registro'))
+        razao = (lic.get('razao_social') or '—').strip()
+        arquivo = lic.get('arquivo', '')
+
+        col = ctk.CTkFrame(parent, fg_color='transparent', width=300)
+        col.pack(side='left', padx=6, pady=6)
+        col.pack_propagate(False)
+
+        ctk.CTkLabel(
+            col,
+            text=data_txt,
+            font=('Consolas', 11),
+            text_color='#95a5a6',
+            anchor='w',
+            justify='left',
+        ).pack(anchor='w', fill='x')
+        ctk.CTkLabel(
+            col,
+            text=razao,
+            font=('Arial', 12, 'bold'),
+            anchor='w',
+            justify='left',
+            wraplength=280,
+        ).pack(anchor='w', fill='x', pady=(2, 0))
+        if arquivo:
+            ctk.CTkLabel(
+                col,
+                text=arquivo,
+                font=('Arial', 9),
+                text_color='#666666',
+                anchor='w',
+            ).pack(anchor='w', pady=(2, 0))
 
     def carregar_lista(self):
         for w in self.scroll.winfo_children():
@@ -108,12 +146,12 @@ class PainelLicencas(ctk.CTk):
             row = ctk.CTkFrame(self.scroll, fg_color='#1e1e1e', corner_radius=6)
             row.pack(fill='x', pady=3, padx=2)
 
-            ctk.CTkLabel(row, text=lic['arquivo'], width=170, anchor='w').pack(side='left', padx=6, pady=8)
-            ctk.CTkLabel(row, text=lic['razao_social'], width=190, anchor='w').pack(side='left', padx=4)
+            self._montar_coluna_data_transportadora(row, lic)
+
             ctk.CTkLabel(
                 row, text=(lic['instalacao_id'] or '—')[:32], width=200, anchor='w',
                 font=('Consolas', 10),
-            ).pack(side='left', padx=4)
+            ).pack(side='left', padx=4, pady=8)
             ctk.CTkLabel(row, text=str(lic['ativado']), width=60).pack(side='left', padx=4)
 
             cor = '#2ecc71' if lic['liberado'] else '#e74c3c'
@@ -131,6 +169,15 @@ class PainelLicencas(ctk.CTk):
                 row, text='Desativar', width=82, height=30, fg_color='#c0392b',
                 command=lambda n=nome: self.alterar(n, 'não'),
             ).pack(side='left', padx=3, pady=6)
+            ctk.CTkButton(
+                row,
+                text='🗑',
+                width=40,
+                height=30,
+                fg_color='#555555',
+                hover_color='#c0392b',
+                command=lambda l=lic: self.excluir(l),
+            ).pack(side='right', padx=8, pady=6)
 
         self.status.configure(text=f'{len(licencas)} licença(s) carregada(s)')
 
@@ -149,6 +196,35 @@ class PainelLicencas(ctk.CTk):
         self.status.configure(text='')
         if ok:
             messagebox.showinfo('Sucesso', msg)
+            self.carregar_lista()
+        else:
+            messagebox.showerror('Erro', msg)
+
+    def excluir(self, lic):
+        nome = lic.get('arquivo', '')
+        razao = lic.get('razao_social', '—')
+        data_txt = lr.formatar_data_registro_exibicao(lic.get('data_registro'))
+        if not messagebox.askyesno(
+            'Excluir cadastro',
+            'Remover permanentemente este cadastro do GitHub?\n\n'
+            f'Data: {data_txt}\n'
+            f'Transportadora: {razao}\n'
+            f'Arquivo: {nome}\n\n'
+            'O cliente ficará sem licença até registrar de novo.',
+            icon='warning',
+        ):
+            return
+        self.status.configure(text='Excluindo no GitHub...')
+        self.update_idletasks()
+        try:
+            ok, msg = lr.excluir_licenca_arquivo(nome)
+        except Exception as e:
+            self.status.configure(text='')
+            messagebox.showerror('Erro', str(e))
+            return
+        self.status.configure(text='')
+        if ok:
+            messagebox.showinfo('Excluído', msg)
             self.carregar_lista()
         else:
             messagebox.showerror('Erro', msg)

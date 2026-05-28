@@ -1,10 +1,11 @@
 import database_setup as db
 import threading
-from robo_web import modulo_migracao
+from robo_web import modulo_frota, modulo_migracao
 
 class ItensController:
     def __init__(self):
         self.view = None
+        self._sincronizando = False
 
     def obter_grupos_unicos(self):
         itens = db.obter_itens_erp()
@@ -36,6 +37,25 @@ class ItensController:
             return filtrados[:max(1, int(limite))]
         except Exception:
             return filtrados
+
+    def sincronizar_itens_erp(self, ao_finalizar=None):
+        if self._sincronizando:
+            return False
+
+        def rodar():
+            self._sincronizando = True
+            try:
+                modulo_frota.baixar_e_importar_itens()
+            finally:
+                self._sincronizando = False
+                if self.view and ao_finalizar:
+                    try:
+                        self.view.after(0, ao_finalizar)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=rodar, daemon=True).start()
+        return True
 
     # ==========================================
     # LÓGICA DE MIGRAÇÃO COM O ROBÔ

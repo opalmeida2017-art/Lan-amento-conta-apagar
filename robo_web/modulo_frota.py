@@ -5,6 +5,7 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 import database_setup as db
 from robo_web.erp_lock import ERP_LOCK
+from robo_web.runtime_config import usar_headless
 
 
 def baixar_e_importar_frota(config_override=None):
@@ -33,7 +34,7 @@ def _baixar_e_importar_frota_impl(config_override=None):
     os.makedirs(pasta_downloads, exist_ok=True)
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chrome")
+        browser = p.chromium.launch(headless=usar_headless(), channel="chrome")
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         
@@ -133,7 +134,7 @@ def _baixar_e_importar_itens_impl(config_override=None):
     os.makedirs(pasta_downloads, exist_ok=True)
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, channel="chrome")
+        browser = p.chromium.launch(headless=usar_headless(), channel="chrome")
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
         

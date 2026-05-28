@@ -58,7 +58,26 @@ class PainelFiltros(ctk.CTkFrame):
             font=("Arial", 11),
             wraplength=220,
         )
-        self.lbl_dica_ultimos_30_dias.pack(pady=(0, 10), padx=12, anchor="w")
+        self.lbl_dica_ultimos_30_dias.pack(pady=(0, 6), padx=12, anchor="w")
+
+        self.var_hoje_apenas = ctk.BooleanVar(value=False)
+        self.chk_hoje_apenas = ctk.CTkCheckBox(
+            frame_data,
+            text="Consultar e importar somente notas de HOJE",
+            variable=self.var_hoje_apenas,
+            command=self._alternar_periodo_hoje,
+        )
+        self.chk_hoje_apenas.pack(pady=(4, 4), padx=20, anchor="w")
+
+        self.lbl_dica_hoje_apenas = ctk.CTkLabel(
+            frame_data,
+            text="Ao marcar, o robô ignora Mês/Ano e consulta na SEFAZ apenas a data de hoje.",
+            justify="left",
+            text_color="#9ecbff",
+            font=("Arial", 11),
+            wraplength=220,
+        )
+        self.lbl_dica_hoje_apenas.pack(pady=(0, 10), padx=12, anchor="w")
 
         ctk.CTkLabel(frame_data, text="Cod. Filial:").pack()
         self.entry_cod_filial = ctk.CTkEntry(
@@ -196,11 +215,22 @@ class PainelFiltros(ctk.CTkFrame):
         self.entry_cod_grupo_item.configure(width=largura_codigo)
         self.lbl_aviso_filial_ue.configure(wraplength=wrap)
         self.lbl_dica_ultimos_30_dias.configure(wraplength=wrap)
+        self.lbl_dica_hoje_apenas.configure(wraplength=wrap)
         self.btn_salvar.configure(width=min(max(largura - 60, 240), 340))
 
     def _alternar_periodo_30_dias(self):
-        usar_ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
-        estado_combos = "disabled" if usar_ultimos_30_dias else "readonly"
+        if bool(self.var_ultimos_30_dias.get()):
+            self.var_hoje_apenas.set(False)
+        self._aplicar_estado_combos_periodo()
+
+    def _alternar_periodo_hoje(self):
+        if bool(self.var_hoje_apenas.get()):
+            self.var_ultimos_30_dias.set(False)
+        self._aplicar_estado_combos_periodo()
+
+    def _aplicar_estado_combos_periodo(self):
+        periodo_fixo = bool(self.var_ultimos_30_dias.get()) or bool(self.var_hoje_apenas.get())
+        estado_combos = "disabled" if periodo_fixo else "readonly"
         self.combo_mes.configure(state=estado_combos)
         self.combo_ano.configure(state=estado_combos)
 
@@ -213,15 +243,24 @@ class PainelFiltros(ctk.CTkFrame):
         if dados_salvos:
             self.combo_mes.set(dados_salvos['mes'])
             self.combo_ano.set(dados_salvos['ano'])
+            
+            # Carrega a flag de 30 dias
             if dados_salvos.get('ultimos_30_dias'):
                 self.chk_ultimos_30_dias.select()
             else:
                 self.chk_ultimos_30_dias.deselect()
+                
+            if dados_salvos.get('hoje_apenas'):
+                self.chk_hoje_apenas.select()
+            else:
+                self.chk_hoje_apenas.deselect()
+
             self.entry_cod_filial.delete(0, 'end')
             self.entry_cod_filial.insert(0, dados_salvos.get('cod_filial', ''))
             self.entry_cod_unidade_embarque.delete(0, 'end')
             self.entry_cod_unidade_embarque.insert(0, dados_salvos.get('cod_unidade_embarque', ''))
-        self._alternar_periodo_30_dias()
+        
+        self._aplicar_estado_combos_periodo()
 
         # Carrega Modelos de Placa
         modelos_salvos_placa = db.obter_modelos_placa_string()
@@ -305,9 +344,15 @@ class PainelFiltros(ctk.CTkFrame):
             cod_filial = self.entry_cod_filial.get().strip()
             cod_unidade = self.entry_cod_unidade_embarque.get().strip()
             ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
+            hoje_apenas = bool(self.var_hoje_apenas.get())
 
             sucesso_f, msg_f = db.salvar_filtros(
-                mes_escolhido, ano_escolhido, cod_filial, cod_unidade, ultimos_30_dias,
+                mes_escolhido,
+                ano_escolhido,
+                cod_filial,
+                cod_unidade,
+                ultimos_30_dias=ultimos_30_dias,
+                hoje_apenas=hoje_apenas,
             )
             db.salvar_modelos_placa(modelos_placa_digitados)
             db.salvar_modelos_km(modelos_km_digitados) # Salva os KMs
@@ -328,7 +373,7 @@ class PainelFiltros(ctk.CTkFrame):
             if sucesso_f:
                 messagebox.showinfo(
                     "✅ Sucesso",
-                    "Configurações salvas (período, últimos 30 dias, filial, unidade, placas e KMs).",
+                    "Configurações salvas (período, hoje/30 dias, filial, unidade, placas e KMs).",
                 )
             else:
                 messagebox.showerror("❌ Erro", msg_f)

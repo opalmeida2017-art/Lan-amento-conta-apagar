@@ -12,7 +12,7 @@ import licenca_remota
 import agendamento_email
 import log_service
 
-from robo_web import robo_web, modulo_frota, modulo_importa_xml
+from robo_web import automacao, modulo_frota, modulo_importa_xml
 from robo_web.controle_robo import (
     RoboParadoPeloUsuario,
     esta_rodando,
@@ -47,6 +47,7 @@ class AppController:
         self.view_importa_xml = None
 
         self.view = MainWindow(controller=self)
+        self._configurar_callback_painel_notas()
 
         self.sistema_bloqueado = False
 
@@ -54,6 +55,9 @@ class AppController:
         self._sessao_log_robo = None
         self._importacao_xml_pendente = None
         self._importacao_xml_em_andamento = False
+        self._timer_atualizar_painel_id = None
+        self._ultima_msg_status_robo = ""
+        self._intervalo_atualizar_painel_ms = 4000
 
 
 
@@ -74,13 +78,15 @@ class AppController:
 
             if not self._licenca_remota_liberada():
 
-                self.view.mostrar_tela_bloqueio_licenca()
+                self.sistema_bloqueado = True
+                self.view.mostrar_menu_principal(apenas_configuracao=True)
+                self.agendar_verificacao_licenca()
 
                 return
 
             self.sistema_bloqueado = False
 
-            self.view.mostrar_menu_principal()
+            self.view.mostrar_menu_principal(apenas_configuracao=False)
 
             self.agendar_verificacao_licenca()
 
@@ -106,7 +112,7 @@ class AppController:
 
         if not licenca_remota.licenca_configurada():
 
-            return True
+            return False
 
         try:
             licenca_remota.garantir_registro_inicial_bloqueado()
@@ -153,9 +159,19 @@ class AppController:
             ult = (inst.get('ultimo_ativado_github') or '').lower()
             if ult in ('não', 'nao', 'n', 'no'):
                 self.sistema_bloqueado = True
-                self.view.after(0, self.view.mostrar_tela_bloqueio_licenca)
+                self.view.after(
+                    0,
+                    lambda: self.view.mostrar_menu_principal(apenas_configuracao=True),
+                )
         else:
-            self.sistema_bloqueado = False
+            if self.sistema_bloqueado:
+                self.sistema_bloqueado = False
+                self.view.after(
+                    0,
+                    lambda: self.view.mostrar_menu_principal(apenas_configuracao=False),
+                )
+            else:
+                self.sistema_bloqueado = False
         self.agendar_verificacao_licenca()
 
 
@@ -163,8 +179,10 @@ class AppController:
     def tentar_revalidar_licenca(self):
         if self._licenca_remota_liberada():
             self.sistema_bloqueado = False
-            self.verificar_acesso()
+            self.view.mostrar_menu_principal(apenas_configuracao=False)
+            messagebox.showinfo("Licença", "Licença liberada. Sistema pronto para uso.")
             return
+
         inst = db.carregar_instalacao_licenca()
         razao = (inst.get('razao_social') or '').strip()
         if razao:
@@ -174,12 +192,13 @@ class AppController:
 
         if self._licenca_remota_liberada():
             self.sistema_bloqueado = False
-            self.verificar_acesso()
+            self.view.mostrar_menu_principal(apenas_configuracao=False)
+            messagebox.showinfo("Licença", "Licença liberada. Sistema pronto para uso.")
         else:
-            messagebox.showerror(
+            messagebox.showinfo(
                 "Licença",
-                "Licença suspensa (ativado = não) ou arquivo ausente.\n"
-                "Entre em contato com o suporte.",
+                "Ainda bloqueado. Salve a transportadora, anote o ID e aguarde a liberação.\n"
+                "Depois clique em «Verificar licença».",
             )
 
 
@@ -402,6 +421,14 @@ class AppController:
 
 
 
+    def _configurar_callback_painel_notas(self):
+        """Atualiza o dashboard da aba Execução sempre que uma nota for gravada no banco."""
+        def _atualizar_painel():
+            if self.view and self.view_execucao:
+                self.view.after(0, self.view_execucao.atualizar_tabela_dashboard)
+
+        db.registrar_callback_painel_notas(_atualizar_painel)
+
     def notificar_atualizacao_tabelas(self):
 
         try:
@@ -415,6 +442,12 @@ class AppController:
                         component.atualizar_tabela()
 
         except: pass
+
+        if self.view_execucao:
+            try:
+                self.view_execucao.atualizar_tabela_dashboard()
+            except Exception:
+                pass
 
 
     def _atualizar_status_importa_xml(self, mensagem, cor="gray"):
@@ -604,6 +637,36 @@ class AppController:
             self._definir_estado_importa_xml(False)
 
 
+    def _cancelar_atualizacao_painel_robo(self):
+        if self._timer_atualizar_painel_id and self.view:
+            try:
+                self.view.after_cancel(self._timer_atualizar_painel_id)
+            except Exception:
+                pass
+        self._timer_atualizar_painel_id = None
+
+    def _agendar_atualizacao_painel_robo(self):
+        self._cancelar_atualizacao_painel_robo()
+        if not self.view or not self.view_execucao:
+            return
+
+        def _tick():
+            if not esta_rodando():
+                self._timer_atualizar_painel_id = None
+                return
+            try:
+                self.view_execucao.atualizar_tabela_dashboard()
+            except Exception:
+                pass
+            if self.view:
+                self._timer_atualizar_painel_id = self.view.after(
+                    self._intervalo_atualizar_painel_ms,
+                    _tick,
+                )
+
+        if self.view:
+            self._timer_atualizar_painel_id = self.view.after(0, _tick)
+
     def iniciar_robo(self, nota_alvo=None, compra_estoque=False):
         if self.sistema_bloqueado or not self._licenca_remota_liberada():
             log_service.registrar_log(
@@ -637,6 +700,7 @@ class AppController:
                 self.view_execucao.status_label.configure(
                     text="Status: Parando robô e fechando navegador...",
                 )
+            self._cancelar_atualizacao_painel_robo()
             return
 
         if self.view_execucao:
@@ -656,109 +720,79 @@ class AppController:
             daemon=True,
         )
         thread_robo.start()
-
-
+        self._agendar_atualizacao_painel_robo()
 
     def executar_robo_playwright(self, nota_alvo=None, compra_estoque=False):
         sessao_log = self._sessao_log_robo
-        status_final = "CONCLUIDA"
 
-        filtros = db.carregar_filtros()
+        def atualizar_status_ui(mensagem):
+            texto = str(mensagem or "").strip()
+            if not texto:
+                return
 
-        if not filtros:
-            log_service.registrar_log(
-                "Execução cancelada: mês/ano não configurados.",
-                origem="ROBO",
-                sessao_id=sessao_log,
-                nivel="WARN",
-            )
+            if texto != self._ultima_msg_status_robo:
+                self._ultima_msg_status_robo = texto
+                log_service.registrar_log(
+                    texto,
+                    origem="ROBO",
+                    sessao_id=sessao_log,
+                )
 
+            if self.view_execucao:
+                self.view.after(
+                    0,
+                    lambda t=texto: self.view_execucao.status_label.configure(
+                        text=f"Status: {t}",
+                    ),
+                )
+
+        config = db.carregar_configuracoes()
+        status_final = "SUCESSO"
+        if not config or not config.get("link"):
             self.view.after(
                 0,
                 lambda: messagebox.showwarning(
                     "Aviso",
-                    "Selecione o Mês e Ano na aba 'Parâmetros ERP' antes de iniciar!",
+                    "Configure o link e usuário do ERP na aba Configurações.",
                 ),
             )
-
-            if self.view_execucao: self.view.after(0, self.view_execucao.restaurar_botao_robo)
+            self._cancelar_atualizacao_painel_robo()
+            self._ultima_msg_status_robo = ""
             log_service.finalizar_sessao(
                 sessao_log,
                 origem="ROBO",
-                status="CANCELADA",
+                status="ERRO",
             )
             self._sessao_log_robo = None
-
-            return
-
-
-
-        ultimos_30_dias = bool((filtros or {}).get('ultimos_30_dias'))
-
-        try:
-            mes_completo = filtros['mes'].split("-")[1].strip()
-            mes_formatado = mes_completo[:3].capitalize()
-        except Exception:
-            mes_formatado = "Jan"
-
-        meses_selecionados = [mes_formatado]
-        anos_selecionados = [filtros['ano']]
-        descricao_periodo = (
-            "últimos 30 dias"
-            if ultimos_30_dias
-            else f"{mes_formatado}/{filtros['ano']}"
-        )
-
-
-
-        def atualizar_status_ui(mensagem):
-
-            print(f"[PLAYWRIGHT]: {mensagem}") 
-            log_service.registrar_log(
-                mensagem,
-                origem="ROBO",
-                sessao_id=sessao_log,
-            )
-
             if self.view_execucao:
-
-                self.view.after(0, lambda: self.view_execucao.status_label.configure(text=f"Status: {mensagem}"))
-
-
-
-        config = db.carregar_configuracoes()
-
-        if not config or not config['link']:
-            log_service.registrar_log(
-                "Execução cancelada: configurações do ERP ausentes.",
-                origem="ROBO",
-                sessao_id=sessao_log,
-                nivel="WARN",
-            )
-
-            self.view.after(0, lambda: messagebox.showwarning("Aviso", "Configure o link e usuário do ERP na aba Configurações."))
-
-            if self.view_execucao: self.view.after(0, self.view_execucao.restaurar_botao_robo)
-            log_service.finalizar_sessao(
-                sessao_log,
-                origem="ROBO",
-                status="CANCELADA",
-            )
-            self._sessao_log_robo = None
-
+                self.view.after(0, self.view_execucao.restaurar_botao_robo)
             return
 
+        filtros = db.carregar_filtros() or {}
+        mes_escolhido = filtros.get("mes", "01 - Janeiro")
+        anos_selecionados = [filtros.get("ano", "2024")]
+        ultimos_30_dias = bool(filtros.get("ultimos_30_dias", 0))
+        
+        # 🟢 ALTERAÇÃO CIRÚRGICA: CAPTURA DO FILTRO 'HOJE'
+        hoje_apenas = bool(filtros.get("hoje_apenas", 0))
 
+        partes_mes = str(mes_escolhido).split(" ")
+        mes_formatado = partes_mes[2] if len(partes_mes) > 2 else "Janeiro"
+        meses_selecionados = [mes_formatado]
 
         try:
             if nota_alvo:
-                atualizar_status_ui(
-                    f"Iniciando lançamento da nota {nota_alvo} para "
-                    f"{descricao_periodo}...",
-                )
+                atualizar_status_ui(f"Iniciando robô para a nota {nota_alvo}...")
             else:
-                atualizar_status_ui(f"Iniciando robô para {descricao_periodo}...")
-            robo_web.iniciar_automacao(
+                # 🟢 ALTERAÇÃO CIRÚRGICA: MENSAGEM DINÂMICA
+                if hoje_apenas:
+                    atualizar_status_ui("Iniciando robô para as notas de HOJE...")
+                elif ultimos_30_dias:
+                    atualizar_status_ui("Iniciando robô para os últimos 30 dias...")
+                else:
+                    atualizar_status_ui(f"Iniciando robô para {mes_formatado}/{anos_selecionados[0]}...")
+
+            automacao.iniciar_automacao(
                 config,
                 meses_selecionados,
                 anos_selecionados,
@@ -766,9 +800,11 @@ class AppController:
                 nota_alvo=nota_alvo,
                 compra_estoque=compra_estoque,
                 ultimos_30_dias=ultimos_30_dias,
+                hoje_apenas=hoje_apenas, # 🟢 ALTERAÇÃO CIRÚRGICA: REPASSE DO PARÂMETRO
             )
+
             self.view.after(0, lambda: self.view_execucao.atualizar_tabela_dashboard())
-            if not self._importacao_xml_pendente:
+            if not nota_alvo:
                 self.view.after(0, lambda: messagebox.showinfo("Sucesso", "Automação concluída com sucesso!"))
 
         except RoboParadoPeloUsuario:
@@ -789,6 +825,8 @@ class AppController:
             self.view.after(0, lambda: messagebox.showerror("Erro Crítico", f"Falha na automação:\n{msg_erro}"))
 
         finally:
+            self._cancelar_atualizacao_painel_robo()
+            self._ultima_msg_status_robo = ""
             log_service.finalizar_sessao(
                 sessao_log,
                 origem="ROBO",
@@ -799,10 +837,10 @@ class AppController:
             self._sessao_log_robo = None
             if self.view_execucao:
                 self.view.after(0, self.view_execucao.restaurar_botao_robo)
+                self.view.after(0, self.view_execucao.atualizar_tabela_dashboard)
             if importacao_pendente:
                 self._atualizar_status_importa_xml(
                     "Robô finalizado. Iniciando agora a importação manual de XML.",
-                    "#3b8ed0",
+                    cor="#f39c12",
                 )
-                self._iniciar_thread_importacao_xml(importacao_pendente)
-
+                self.view.after(500, lambda: self.iniciar_importacao_xml(importacao_pendente))

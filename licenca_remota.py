@@ -291,9 +291,9 @@ def registrar_instalacao(razao_social):
 
     if not licenca_configurada():
         iid = db.obter_ou_criar_instalacao_id()
-        return True, (
-            'Licença remota desativada (configure licenca_config.py). '
-            f'ID local: {iid}'
+        return False, (
+            'Serviço de licença indisponível nesta instalação. '
+            'Contate o suporte técnico.'
         ), iid
 
     try:
@@ -362,7 +362,7 @@ def garantir_registro_inicial_bloqueado():
     (ativado = não). Mantém compatibilidade com instalações já registradas.
     """
     if not licenca_configurada():
-        return True, 'Licença remota desativada.', db.obter_ou_criar_instalacao_id()
+        return False, 'Serviço de licença indisponível. Contate o suporte.', db.obter_ou_criar_instalacao_id()
 
     instalacao_id = db.obter_ou_criar_instalacao_id()
     info = db.carregar_instalacao_licenca()
@@ -460,10 +460,10 @@ def _buscar_licenca_por_instalacao_id(instalacao_id, branch):
 def arquivo_licenca_existe(instalacao_id=None):
     """True se o arquivo existir no GitHub e a linha ativado for sim."""
     if not licenca_configurada():
-        return True
+        return False
 
     if not db.obter_instalacao_id():
-        return True
+        return False
 
     _recuperar_legado_bloqueio_rede()
 
@@ -549,7 +549,43 @@ def listar_todas_licencas():
             'data_registro': dados.get('data_registro', '—'),
             'hostname': dados.get('hostname', '—'),
         })
+
+    def _chave_ordenacao(lic):
+        dt = _parse_data_local(lic.get('data_registro'))
+        return dt or datetime.min
+
+    licencas.sort(key=_chave_ordenacao, reverse=True)
     return licencas
+
+
+def formatar_data_registro_exibicao(texto):
+    """Formata data_registro do JSON para exibição no painel (dd/mm/aaaa HH:MM)."""
+    dt = _parse_data_local(texto)
+    if dt:
+        return dt.strftime('%d/%m/%Y %H:%M')
+    t = str(texto or '').strip()
+    return t if t and t != '—' else '—'
+
+
+def excluir_licenca_arquivo(nome_arquivo):
+    """Remove o cadastro da licença do repositório GitHub."""
+    nome = str(nome_arquivo or '').strip()
+    if not nome.endswith('.json'):
+        return False, 'Nome de arquivo inválido.'
+    if not licenca_configurada():
+        return False, 'Licença remota não configurada.'
+    try:
+        branch = _branch_ativa()
+        caminho = _caminho_arquivo_por_nome(nome)
+        sha = _obter_sha_existente(caminho, branch)
+        if not sha:
+            return False, f'Arquivo não encontrado no GitHub: {nome}'
+        _apagar_arquivo_github(caminho, branch)
+        return True, f'Cadastro removido do GitHub:\n{nome}'
+    except urllib.error.HTTPError as e:
+        return False, f'Erro ao excluir no GitHub (HTTP {e.code}).'
+    except Exception as e:
+        return False, str(e)
 
 
 def definir_ativado_arquivo(nome_arquivo, ativado):

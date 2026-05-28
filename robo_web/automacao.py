@@ -12,10 +12,11 @@ from .controle_robo import (
     verificar_parada,
 )
 from .erp_lock import ERP_LOCK
+from .runtime_config import usar_headless
 from .utils import ErroServidorIndisponivel, verificar_pagina_erp_ok
 
 TEMPO_ESPERA_503_SEG = 120
-MAX_REINICIOS = 30
+TEMPO_ESPERA_RETOMADA_SEG = 120
 
 
 def _aguardar_segundos(segundos, log, mensagem):
@@ -34,14 +35,17 @@ def _executar_sessao(
     nota_alvo=None,
     compra_estoque=False,
     ultimos_30_dias=False,
+    hoje_apenas=False, # 🟢 ADICIONADO AQUI
 ):
-    browser = p.chromium.launch(headless=False)
+    browser = p.chromium.launch(headless=usar_headless(), channel="chrome")
     registrar_browser(browser)
-    page = browser.new_page()
+    context = browser.new_context(viewport={"width": 1380, "height": 900})
+    page = context.new_page()
     try:
         verificar_parada()
         with ERP_LOCK:
             log('🔒 Sessão ERP exclusiva (robô NFe)')
+            # 🟢 PASSAR O PARÂMETRO AQUI NA CHAMADA:
             if not modulo_sefaz.consultar_sefaz(
                 page,
                 config,
@@ -49,7 +53,10 @@ def _executar_sessao(
                 anos,
                 log,
                 ultimos_30_dias=ultimos_30_dias,
+                hoje_apenas=hoje_apenas, # 🟢 ADICIONADO AQUI
             ):
+                return False
+                
                 raise RuntimeError('Consulta SEFAZ não confirmou sucesso.')
             verificar_parada()
             verificar_pagina_erp_ok(page, log)
@@ -68,6 +75,10 @@ def _executar_sessao(
         return True
     finally:
         try:
+            context.close()
+        except Exception:
+            pass
+        try:
             browser.close()
         except Exception:
             pass
@@ -82,6 +93,7 @@ def iniciar_automacao(
     nota_alvo=None,
     compra_estoque=False,
     ultimos_30_dias=False,
+    hoje_apenas=False, # 🟢 ADICIONADO AQUI
 ):
     def log(msg):
         if progresso_callback:
@@ -89,9 +101,9 @@ def iniciar_automacao(
         print(f'[ROBÔ]: {msg}')
 
     marcar_rodando(True)
-    reinicios = 0
+    modo_continuo = not str(nota_alvo or '').strip()
     try:
-        while reinicios <= MAX_REINICIOS:
+        while True:
             verificar_parada()
             try:
                 with sync_playwright() as p:
@@ -104,22 +116,27 @@ def iniciar_automacao(
                         nota_alvo=nota_alvo,
                         compra_estoque=compra_estoque,
                         ultimos_30_dias=ultimos_30_dias,
+                        hoje_apenas=hoje_apenas, # 🟢 ADICIONADO AQUI
                     )
-                log('Automação concluída.')
-                return
+                if not modo_continuo:
+                    log('Automação concluída.')
+                    return
+                _aguardar_segundos(
+                    TEMPO_ESPERA_RETOMADA_SEG,
+                    log,
+                    '✅ Ciclo concluído. Aguardando 2 min para verificar novas notas...',
+                )
+                log('🔄 Retomando monitoramento automático do painel...')
             except RoboParadoPeloUsuario:
                 log('Robô parado pelo usuário. Navegador fechado.')
                 raise
             except ErroServidorIndisponivel:
-                reinicios += 1
-                if reinicios > MAX_REINICIOS:
-                    log(f'Limite de {MAX_REINICIOS} reinícios após erro 503.')
+                if not modo_continuo:
                     raise
                 _aguardar_segundos(
                     TEMPO_ESPERA_503_SEG,
                     log,
-                    f'Servidor ERP em manutenção (503). Aguardando {TEMPO_ESPERA_503_SEG // 60} min '
-                    f'(tentativa {reinicios}/{MAX_REINICIOS})...',
+                    f'Servidor ERP em manutenção (503). Aguardando {TEMPO_ESPERA_503_SEG // 60} min para tentar novamente...',
                 )
                 log('Reiniciando robô (novo navegador)...')
             except Exception as e:
@@ -127,7 +144,14 @@ def iniciar_automacao(
                 if _sessao.get('parar'):
                     log('Robô parado pelo usuário. Navegador fechado.')
                     raise RoboParadoPeloUsuario() from e
-                log(f'ERRO: {e}')
-                raise
+                if not modo_continuo:
+                    log(f'ERRO: {e}')
+                    raise
+                _aguardar_segundos(
+                    TEMPO_ESPERA_RETOMADA_SEG,
+                    log,
+                    f'⚠️ Erro de tela/processamento: {e}. Aguardando 2 min para retomar...',
+                )
+                log('🔄 Retomando monitoramento automático após erro...')
     finally:
         encerrar_sessao()

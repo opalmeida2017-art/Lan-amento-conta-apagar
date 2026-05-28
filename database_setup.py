@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import sys
 import urllib.request
 from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
@@ -7,6 +8,20 @@ import bcrypt
 import secrets
 import string
 import json
+
+
+def caminho_banco():
+    """Caminho absoluto do SQLite — não depende do diretório de trabalho ao abrir o .exe."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "sistema_automacao.db")
+
+
+def conectar_banco(**kwargs):
+    return sqlite3.connect(caminho_banco(), **kwargs)
+
 
 # ==========================================
 # 1. MÓDULO DE SEGURANÇA E CRIPTOGRAFIA
@@ -24,7 +39,7 @@ def gerar_hash_senha(senha_texto_puro):
 
 def validar_login(email, senha_texto):
     """Verifica se o e-mail existe e se a senha bate com o Hash."""
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
     cursor.execute("SELECT senha_hash FROM Usuarios WHERE email = ?", (email,))
     resultado = cursor.fetchone()
@@ -42,7 +57,7 @@ def validar_login(email, senha_texto):
 # 2. CONFIGURAÇÃO DO BANCO E USUÁRIOS
 # ==========================================
 def inicializar_banco():
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Usuarios (
@@ -101,7 +116,11 @@ def inicializar_banco():
         cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN ultimos_30_dias INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
-        
+    try:
+        cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN hoje_apenas INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
     # TABELA COM A COLUNA NOVA DE OBSERVAÇÃO
     cursor.execute('''CREATE TABLE IF NOT EXISTS notas_raspadas (
         id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT, fornecedor TEXT, num_nota TEXT, data_em TEXT,
@@ -145,7 +164,7 @@ def configurar_usuario_master():
     email_master = "op.almeida@hotmail.com"
     senha_master = "123"
     
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM Usuarios WHERE email = ?", (email_master,))
     if not cursor.fetchone():
@@ -157,7 +176,7 @@ def configurar_usuario_master():
 
 def contar_usuarios_comuns():
     """Conta quantos usuários existem, IGNORANDO o Master."""
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM Usuarios WHERE email != 'op.almeida@hotmail.com'")
     total = cursor.fetchone()[0]
@@ -170,7 +189,7 @@ def cadastrar_usuario(nome, email, senha):
         return False, "Limite de usuários atingido (Máximo: 1 Operador)."
     
     senha_hash = gerar_hash_senha(senha)
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO Usuarios (nome_completo, email, senha_hash) VALUES (?, ?, ?)",
@@ -193,7 +212,7 @@ PALAVRA_SECRETA = "AUTOMACAO_FROTA_SEFAZ_2026_MASTER"
 
 def criar_tabela_licenca():
     """Garante que a tabela de licença exista no banco de dados"""
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS licenca_sistema (
@@ -209,7 +228,7 @@ def checar_status_licenca():
     """Verifica se o sistema ainda está dentro do prazo"""
     criar_tabela_licenca()
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         c.execute('SELECT data_expiracao FROM licenca_sistema ORDER BY id DESC LIMIT 1')
         resultado = c.fetchone()
@@ -248,7 +267,7 @@ def ativar_token_31_dias(token):
     assinatura_esperada = hashlib.sha256((caracteres_base + PALAVRA_SECRETA).encode()).hexdigest()[:4].upper()
     
     if assinatura_recebida == assinatura_esperada:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         c.execute('SELECT id FROM licenca_sistema WHERE token_usado = ?', (token_limpo,))
         if c.fetchone():
@@ -271,7 +290,7 @@ def ativar_token_31_dias(token):
 import uuid
 
 def criar_tabela_instalacao():
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS instalacao_licenca (
@@ -303,7 +322,7 @@ def criar_tabela_instalacao():
 def obter_ou_criar_instalacao_id():
     """Gera UUID único na primeira vez; reutiliza nas próximas."""
     criar_tabela_instalacao()
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute('SELECT instalacao_id FROM instalacao_licenca WHERE id = 1')
     row = c.fetchone()
@@ -322,7 +341,7 @@ def obter_ou_criar_instalacao_id():
 
 def obter_instalacao_id():
     criar_tabela_instalacao()
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute('SELECT instalacao_id FROM instalacao_licenca WHERE id = 1')
     row = c.fetchone()
@@ -332,7 +351,7 @@ def obter_instalacao_id():
 
 def carregar_instalacao_licenca():
     criar_tabela_instalacao()
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute('SELECT * FROM instalacao_licenca WHERE id = 1')
@@ -344,7 +363,7 @@ def carregar_instalacao_licenca():
 def salvar_razao_social_transportadora(razao_social, nome_arquivo_github):
     criar_tabela_instalacao()
     obter_ou_criar_instalacao_id()
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute(
         'UPDATE instalacao_licenca SET razao_social = ?, nome_arquivo_github = ? WHERE id = 1',
@@ -357,7 +376,7 @@ def salvar_razao_social_transportadora(razao_social, nome_arquivo_github):
 def registrar_upload_licenca_ok():
     criar_tabela_instalacao()
     agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute(
         'UPDATE instalacao_licenca SET ultimo_upload = ?, status = ? WHERE id = 1',
@@ -372,7 +391,7 @@ def registrar_verificacao_licenca(ok):
     agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     status = 'ativo' if ok else 'bloqueado'
     ativado_github = 'sim' if ok else 'não'
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute(
         'UPDATE instalacao_licenca SET ultima_verificacao = ?, status = ?, ultimo_ativado_github = ? WHERE id = 1',
@@ -385,7 +404,7 @@ def registrar_verificacao_licenca(ok):
 def limpar_bloqueio_indevido_rede():
     """Remove bloqueio gravado por falha de rede (não por ativado=não no GitHub)."""
     criar_tabela_instalacao()
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute(
         '''UPDATE instalacao_licenca
@@ -423,7 +442,7 @@ def salvar_configuracoes(
     senha_sis_crypt = f.encrypt(senha_sis.encode()) if senha_sis else b""
     senha_email_crypt = f.encrypt(senha_email.encode()) if senha_email else b""
     
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
     
     cursor.execute("SELECT id FROM Configuracoes WHERE id = 1")
@@ -454,7 +473,7 @@ def salvar_configuracoes(
     return True, "Configurações salvas com segurança!"
 
 def carregar_configuracoes():
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM Configuracoes WHERE id = 1")
     row = cursor.fetchone()
@@ -483,7 +502,7 @@ def carregar_configuracoes():
 
 def atualizar_agendamento_email(tipo='', intervalo_horas=1, proxima_execucao='', ultima_execucao=None):
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         if ultima_execucao is None:
             cursor.execute(
@@ -508,35 +527,78 @@ def atualizar_agendamento_email(tipo='', intervalo_horas=1, proxima_execucao='',
         return False
 
 # --- Filtros ---
-def salvar_filtros(mes, ano, cod_filial='', cod_unidade_embarque='', ultimos_30_dias=False):
+def salvar_filtros(
+    mes,
+    ano,
+    cod_filial='',
+    cod_unidade_embarque='',
+    ultimos_30_dias=False,
+    hoje_apenas=False,
+):
+    conn = conectar_banco()
+    cursor = conn.cursor()
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM filtros_salvos')
-        cursor.execute(
-            '''INSERT INTO filtros_salvos (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias)
-               VALUES (?, ?, ?, ?, ?)''',
-            (
-                mes,
-                ano,
-                str(cod_filial or '').strip(),
-                str(cod_unidade_embarque or '').strip(),
-                1 if ultimos_30_dias else 0,
-            ),
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS filtros_salvos (
+                id INTEGER PRIMARY KEY,
+                mes TEXT,
+                ano TEXT,
+                cod_filial TEXT DEFAULT '',
+                cod_unidade_embarque TEXT DEFAULT '',
+                ultimos_30_dias INTEGER DEFAULT 0,
+                hoje_apenas INTEGER DEFAULT 0
+            )
+        ''')
+        for sql in (
+            "ALTER TABLE filtros_salvos ADD COLUMN cod_filial TEXT DEFAULT ''",
+            "ALTER TABLE filtros_salvos ADD COLUMN cod_unidade_embarque TEXT DEFAULT ''",
+            "ALTER TABLE filtros_salvos ADD COLUMN ultimos_30_dias INTEGER DEFAULT 0",
+            "ALTER TABLE filtros_salvos ADD COLUMN hoje_apenas INTEGER DEFAULT 0",
+        ):
+            try:
+                cursor.execute(sql)
+            except sqlite3.OperationalError:
+                pass
+
+        cursor.execute('SELECT id FROM filtros_salvos ORDER BY id DESC LIMIT 1')
+        row = cursor.fetchone()
+        valores = (
+            mes,
+            ano,
+            str(cod_filial or '').strip(),
+            str(cod_unidade_embarque or '').strip(),
+            int(bool(ultimos_30_dias)),
+            int(bool(hoje_apenas)),
         )
+        if row:
+            cursor.execute(
+                '''UPDATE filtros_salvos
+                   SET mes=?, ano=?, cod_filial=?, cod_unidade_embarque=?,
+                       ultimos_30_dias=?, hoje_apenas=?
+                   WHERE id=?''',
+                valores + (row[0],),
+            )
+        else:
+            cursor.execute(
+                '''INSERT INTO filtros_salvos
+                   (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias, hoje_apenas)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                valores,
+            )
         conn.commit()
-        conn.close()
-        return True, 'Período e códigos de filial/unidade salvos com sucesso!'
+        return True, "Filtros salvos com sucesso."
     except Exception as e:
-        return False, f'Erro ao salvar filtros: {e}'
+        return False, str(e)
+    finally:
+        conn.close()
 
 
 def carregar_filtros():
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         cursor.execute(
-            '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias
+            '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias, hoje_apenas
                FROM filtros_salvos ORDER BY id DESC LIMIT 1''',
         )
         resultado = cursor.fetchone()
@@ -547,14 +609,18 @@ def carregar_filtros():
                 'ano': resultado[1],
                 'cod_filial': resultado[2] or '',
                 'cod_unidade_embarque': resultado[3] or '',
-                'ultimos_30_dias': bool(resultado[4]),
+                'ultimos_30_dias': bool(resultado[4]) if len(resultado) > 4 else False,
+                'hoje_apenas': bool(resultado[5]) if len(resultado) > 5 else False,
             }
         return None
     except Exception:
         try:
-            conn = sqlite3.connect('sistema_automacao.db')
+            conn = conectar_banco()
             cursor = conn.cursor()
-            cursor.execute('SELECT mes, ano, cod_filial, cod_unidade_embarque FROM filtros_salvos ORDER BY id DESC LIMIT 1')
+            cursor.execute(
+                '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias
+                   FROM filtros_salvos ORDER BY id DESC LIMIT 1''',
+            )
             resultado = cursor.fetchone()
             conn.close()
             if resultado:
@@ -563,19 +629,53 @@ def carregar_filtros():
                     'ano': resultado[1],
                     'cod_filial': (resultado[2] or '') if len(resultado) > 2 else '',
                     'cod_unidade_embarque': (resultado[3] or '') if len(resultado) > 3 else '',
-                    'ultimos_30_dias': False,
+                    'ultimos_30_dias': bool(resultado[4]) if len(resultado) > 4 else False,
+                    'hoje_apenas': False,
                 }
         except Exception:
             pass
         return None
 
 # --- Notas Raspadas (Para a Dashboard) ---
+_callback_painel_notas = None
+
+
+def registrar_callback_painel_notas(callback):
+    """Registra função chamada após cada gravação de nota (importada, erro, etc.)."""
+    global _callback_painel_notas
+    _callback_painel_notas = callback
+
+
+def _notificar_painel_notas_alterado():
+    cb = _callback_painel_notas
+    if not cb:
+        return
+    try:
+        cb()
+    except Exception as e:
+        print(f"Aviso: falha ao atualizar painel de notas: {e}")
+
+
 def salvar_nota_raspada(dados_nota):
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT id FROM notas_raspadas WHERE chave_nfe = ?", (dados_nota['chave_nfe'],))
+        chave = str(dados_nota.get('chave_nfe') or '').strip()
+        num = str(dados_nota.get('num_nota') or '').strip()
+        if chave:
+            cursor.execute(
+                "SELECT id FROM notas_raspadas WHERE chave_nfe = ?",
+                (chave,),
+            )
+        elif num:
+            cursor.execute(
+                "SELECT id FROM notas_raspadas WHERE num_nota = ? ORDER BY id DESC LIMIT 1",
+                (num,),
+            )
+        else:
+            conn.close()
+            return False
         if cursor.fetchone():
             conn.close()
             return False
@@ -592,6 +692,7 @@ def salvar_nota_raspada(dados_nota):
         ))
         conn.commit()
         conn.close()
+        _notificar_painel_notas_alterado()
         return True
     except Exception as e:
         print(f"Erro ao salvar nota no banco: {e}")
@@ -631,51 +732,82 @@ def registrar_erro_nota_painel(dados_nota, erro_msg):
     dados_nota['status'] = 'Erro'
     dados_nota['erro_importacao'] = msg
     dados_nota['codigo_interno'] = ''
-    if not atualizar_nota_raspada(dados_nota):
-        salvar_nota_raspada(dados_nota)
-    return True
+    return salvar_ou_atualizar_nota_raspada(dados_nota)
+
+
+def salvar_ou_atualizar_nota_raspada(dados_nota, arquivar_automatico=False):
+    """Insere ou atualiza a nota no dashboard (upsert por chave_nfe ou num_nota)."""
+    if atualizar_nota_raspada(dados_nota, arquivar_automatico=arquivar_automatico):
+        return True
+    return salvar_nota_raspada(dados_nota)
 
 
 def atualizar_nota_raspada(dados_nota, arquivar_automatico=False):
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        chave = str(dados_nota.get('chave_nfe') or '').strip()
+        num = str(dados_nota.get('num_nota') or '').strip()
+        if not chave and not num:
+            return False
+
+        conn = conectar_banco()
         cursor = conn.cursor()
+        params_base = (
+            dados_nota.get('status', ''),
+            dados_nota.get('codigo_interno', ''),
+            dados_nota.get('erro_importacao', ''),
+            dados_nota.get('observacao_nfe', ''),
+        )
+        if chave:
+            filtro = 'chave_nfe = ?'
+            filtro_val = chave
+        else:
+            filtro = (
+                'id = (SELECT id FROM notas_raspadas WHERE num_nota = ? '
+                'ORDER BY id DESC LIMIT 1)'
+            )
+            filtro_val = num
+
         if arquivar_automatico:
-            cursor.execute('''
+            cursor.execute(
+                f'''
                 UPDATE notas_raspadas
                 SET status = ?, codigo_interno = ?, erro_importacao = ?,
                     observacao_nfe = ?, nfe_arquiva = ?
-                WHERE chave_nfe = ?
-            ''', (
-                dados_nota.get('status', ''),
-                dados_nota.get('codigo_interno', ''),
-                dados_nota.get('erro_importacao', ''),
-                dados_nota.get('observacao_nfe', ''),
-                '☑',
-                dados_nota.get('chave_nfe', ''),
-            ))
+                WHERE {filtro}
+                ''',
+                params_base + ('☑', filtro_val),
+            )
         else:
-            cursor.execute('''
+            cursor.execute(
+                f'''
                 UPDATE notas_raspadas
                 SET status = ?, codigo_interno = ?, erro_importacao = ?, observacao_nfe = ?
-                WHERE chave_nfe = ?
-            ''', (
-                dados_nota.get('status', ''),
-                dados_nota.get('codigo_interno', ''),
-                dados_nota.get('erro_importacao', ''),
-                dados_nota.get('observacao_nfe', ''),
-                dados_nota.get('chave_nfe', ''),
-            ))
+                WHERE {filtro}
+                ''',
+                params_base + (filtro_val,),
+            )
+        alterou = cursor.rowcount > 0
         conn.commit()
         conn.close()
-        return True
+        if alterou:
+            _notificar_painel_notas_alterado()
+        return alterou
     except Exception as e:
         print(f"Erro ao atualizar nota: {e}")
         return False
-    
+
+
+def marcar_nota_importada_painel(dados_nota):
+    """Atualiza status Importado no dashboard (upsert) e refresca a tela."""
+    dados = dict(dados_nota or {})
+    dados['status'] = 'Importado'
+    dados['erro_importacao'] = dados.get('erro_importacao') or ''
+    return salvar_ou_atualizar_nota_raspada(dados)
+
+
 def listar_todas_notas():
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM notas_raspadas ORDER BY id DESC")
@@ -793,7 +925,7 @@ def obter_modelos_km_string():
 def sincronizar_frota_erp(lista_veiculos):
     import sqlite3
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         
         # =======================================================
@@ -829,7 +961,7 @@ def obter_vinculo_veiculo(codigo_veiculo):
     import sqlite3
     try:
         # ATENÇÃO: A frota está salva no banco sistema_automacao.db
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         c.execute("SELECT veiculoProprio FROM frota_erp WHERE codVeiculo = ?", (codigo_veiculo,))
         resultado = c.fetchone()
@@ -902,7 +1034,7 @@ def carregar_codigos_combustiveis():
 def atualizar_estoque_nota(chave_nfe, valor_estoque):
     """Atualiza se a NFe vai para o estoque ou não"""
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         cursor.execute("UPDATE notas_raspadas SET nfe_estoque = ? WHERE chave_nfe = ?", (valor_estoque, chave_nfe))
         conn.commit()
@@ -915,7 +1047,7 @@ def atualizar_estoque_nota(chave_nfe, valor_estoque):
 def atualizar_arquiva_nota(chave_nfe, valor_arquiva):
     """Marca se a NFe está arquivada (robô ignora download e importação)."""
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE notas_raspadas SET nfe_arquiva = ? WHERE chave_nfe = ?",
@@ -936,7 +1068,7 @@ def nota_erro_download_permanente(chave_nfe='', num_nota=''):
     if not chave and not num:
         return False
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         if chave:
             c.execute(
@@ -977,7 +1109,7 @@ def nota_encerrada_robo(chave_nfe='', num_nota=''):
     if not chave and not num:
         return False, ''
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         if chave:
             c.execute(
@@ -1012,7 +1144,7 @@ def verificar_nota_arquiva(chave_nfe):
     if not chave_nfe or not str(chave_nfe).strip():
         return False
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         c.execute(
             "SELECT nfe_arquiva, status FROM notas_raspadas WHERE chave_nfe = ?",
@@ -1035,7 +1167,7 @@ def verificar_nota_estoque(chave_nfe):
     """Verifica se o usuário marcou a flag ☑ NFe p/ Estoque no painel"""
     import sqlite3
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         c = conn.cursor()
         c.execute("SELECT nfe_estoque FROM notas_raspadas WHERE chave_nfe = ?", (chave_nfe,))
         res = c.fetchone()
@@ -1054,7 +1186,7 @@ def verificar_nota_estoque(chave_nfe):
 # =======================================================
 def criar_tabela_itens():
     import sqlite3
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS itens_erp (
@@ -1073,7 +1205,7 @@ def sincronizar_itens_erp(lista_itens):
     criar_tabela_itens()
     import sqlite3
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         cursor = conn.cursor()
         
         for item in lista_itens:
@@ -1099,12 +1231,36 @@ def sincronizar_itens_erp(lista_itens):
         print(f"Erro ao salvar itens no banco: {e}")
         return False
 
+def obter_frota_erp(limite=100):
+    """Lê os veículos da frota para preencher a tela de Veículos Ativos."""
+    try:
+        conn = conectar_banco()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        sql = (
+            "SELECT codVeiculo, placa, veiculoProprio, ultima_atualizacao "
+            "FROM frota_erp ORDER BY codVeiculo ASC"
+        )
+        if limite not in (None, "", "Todos"):
+            try:
+                sql += f" LIMIT {max(1, int(limite))}"
+            except (TypeError, ValueError):
+                pass
+        cursor.execute(sql)
+        veiculos = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return veiculos
+    except Exception as e:
+        print(f"Erro ao ler frota do banco ({caminho_banco()}): {e}")
+        return []
+
+
 def obter_itens_erp():
     """Lê os itens do banco para preencher a tela"""
     criar_tabela_itens()
     import sqlite3
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         c.execute("SELECT codItemD, descGrupoImp, descNegocioImp, descricao, ultima_atualizacao FROM itens_erp ORDER BY CAST(codItemD AS INTEGER) ASC")
@@ -1120,7 +1276,7 @@ def obter_itens_erp():
 # =======================================================
 def criar_tabela_relatorios():
     import sqlite3
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS config_relatorios (
@@ -1140,7 +1296,7 @@ def criar_tabela_relatorios():
 def salvar_codigos_relatorios(rel_veic, rel_item, cod_grupo_item=""):
     criar_tabela_relatorios()
     import sqlite3
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     c = conn.cursor()
     c.execute("DELETE FROM config_relatorios")
     c.execute(
@@ -1153,7 +1309,7 @@ def salvar_codigos_relatorios(rel_veic, rel_item, cod_grupo_item=""):
 def carregar_codigos_relatorios():
     criar_tabela_relatorios()
     import sqlite3
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = conectar_banco()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM config_relatorios WHERE id=1")
@@ -1179,7 +1335,7 @@ def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""
     from datetime import datetime
     
     try:
-        conn = sqlite3.connect('sistema_automacao.db')
+        conn = conectar_banco()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
 

@@ -3,6 +3,7 @@ import re
 from playwright.sync_api import sync_playwright
 from robo_web import modulo_frota
 from robo_web.erp_lock import ERP_LOCK
+from robo_web.runtime_config import usar_headless
 
 
 def iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, log_callback, grupo_atual="Filtrado"):
@@ -24,9 +25,8 @@ def iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, log_callback, 
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
-                    headless=False,
+                    headless=usar_headless(),
                     channel="chrome",
-                    args=["--start-maximized"],
                 )                                                   
                 context = browser.new_context(viewport={"width": 1300, "height": 850})
                 page = context.new_page()

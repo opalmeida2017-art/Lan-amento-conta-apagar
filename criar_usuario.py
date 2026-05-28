@@ -10,7 +10,7 @@ def criar_primeiro_usuario():
     # Criptografa a senha antes de salvar (nunca salvamos em texto puro!)
     senha_hash = db.gerar_hash_senha(senha)
 
-    conn = sqlite3.connect('sistema_automacao.db')
+    conn = db.conectar_banco()
     cursor = conn.cursor()
     try:
         cursor.execute("INSERT INTO Usuarios (nome_completo, email, senha_hash) VALUES (?, ?, ?)",

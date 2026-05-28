@@ -58,7 +58,7 @@ def _executar_consulta_periodo(page, log, data_ini, data_fim, nome_empresa, desc
     return False
 
 
-def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False):
+def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False, hoje_apenas=False):
     """
     Realiza o login, navega até o painel e executa o loop de consultas
     pelas empresas e períodos selecionados.
@@ -115,6 +115,20 @@ def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False):
                     data_fim,
                     nome_empresa,
                     "últimos 30 dias",
+                )
+
+                continue
+
+            if hoje_apenas:
+                hoje = datetime.now()
+                data_hoje = hoje.strftime("%d/%m/%Y")
+                _executar_consulta_periodo(
+                    page,
+                    log,
+                    data_hoje,
+                    data_hoje,
+                    nome_empresa,
+                    "Apenas Hoje",
                 )
                 continue
 

@@ -4,8 +4,11 @@ import sqlite3
 import threading
 import uuid
 
+import database_setup as db
 
-DB_PATH = "sistema_automacao.db"
+
+def _db_path():
+    return db.caminho_banco()
 _LISTENERS = []
 _LOCK = threading.Lock()
 
@@ -15,7 +18,7 @@ def _agora_texto():
 
 
 def garantir_tabelas():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -70,7 +73,7 @@ def _notificar(evento):
 def iniciar_sessao(origem="ROBO", descricao=""):
     garantir_tabelas()
     sessao_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -93,7 +96,7 @@ def finalizar_sessao(sessao_id, origem="ROBO", status="CONCLUIDA"):
     if not sessao_id:
         return
     garantir_tabelas()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -121,7 +124,7 @@ def registrar_log(mensagem, origem="SISTEMA", sessao_id=None, nivel="INFO"):
         "mensagem": str(mensagem or "").strip(),
         "criado_em": _agora_texto(),
     }
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -144,7 +147,7 @@ def registrar_log(mensagem, origem="SISTEMA", sessao_id=None, nivel="INFO"):
 
 def listar_logs(limite=1000):
     garantir_tabelas()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     if limite in (None, "", "Todos"):
@@ -248,7 +251,7 @@ def filtrar_logs(logs, dt_ini="", dt_fim="", numero_nota=""):
 
 def limpar_logs():
     garantir_tabelas()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_db_path())
     cursor = conn.cursor()
     cursor.execute("DELETE FROM logs_execucao")
     cursor.execute("DELETE FROM logs_sessoes")
