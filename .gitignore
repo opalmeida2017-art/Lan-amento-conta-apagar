@@ -24,3 +24,7 @@ downloads_erp/
 # IDE / SO
 .vscode/
 .DS_Store
+
+# Artefatos de build
+build/
+dist/
