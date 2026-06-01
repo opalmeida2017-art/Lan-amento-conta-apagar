@@ -6,6 +6,7 @@ from playwright.sync_api import sync_playwright
 import database_setup as db
 from robo_web.erp_lock import ERP_LOCK
 from robo_web.runtime_config import usar_headless
+from robo_web.utils import fazer_login_erp
 
 
 def baixar_e_importar_frota(config_override=None):
@@ -40,12 +41,7 @@ def _baixar_e_importar_frota_impl(config_override=None):
         
         try:
             print(" -> Fazendo login no ERP...")
-            page.goto(config['link'])
-            page.wait_for_load_state("load")
-            page.locator('input[type="text"]').first.fill(config['user_sis'])
-            page.locator('input[type="password"]').first.fill(config['senha_sis'])
-            page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click()
-            page.wait_for_load_state("networkidle")
+            fazer_login_erp(page, config, log=print)
             
             print(" -> Acessando módulo de Exportações...")
             page.locator('text="Exp./Imp."').first.click()
@@ -140,12 +136,7 @@ def _baixar_e_importar_itens_impl(config_override=None):
         
         try:
             print(" -> Fazendo login no ERP...")
-            page.goto(config['link'])
-            page.wait_for_load_state("load")
-            page.locator('input[type="text"]').first.fill(config['user_sis'])
-            page.locator('input[type="password"]').first.fill(config['senha_sis'])
-            page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click()
-            page.wait_for_load_state("networkidle")
+            fazer_login_erp(page, config, log=print)
             
             print(" -> Acessando módulo de Exportações...")
             page.locator('text="Exp./Imp."').first.click()

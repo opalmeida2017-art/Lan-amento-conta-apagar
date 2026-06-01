@@ -24,13 +24,12 @@ def _placa_valida_candidata(placa):
 
 def extrair_placas_da_observacao(memoria_obs, modelos_usuario):
     """
-    Extrai placas da observação da NFe.
-    Prioridade: texto após PLACA/PLAC, depois modelos com esse prefixo, depois demais.
+    Extrai placas da observação da NFe usando os modelos configurados.
+    A comparação é exata (maiúsculas, minúsculas e acentos).
     """
     if not memoria_obs:
         return []
 
-    obs_upper = memoria_obs.upper()
     placas = []
 
     def _adicionar(raw):
@@ -38,31 +37,11 @@ def extrair_placas_da_observacao(memoria_obs, modelos_usuario):
         if _placa_valida_candidata(p) and p not in placas:
             placas.append(p)
 
-    # 1) Explícito: "PLACA RCM1D82" (caso Volvo / caminhão)
-    for m in re.finditer(
-        r'PLACA\s*[:\s]?\s*([A-Z]{3}[0-9][A-Z0-9][0-9]{2}|[A-Z]{3}[0-9]{4})',
-        obs_upper,
-    ):
-        _adicionar(m.group(1))
-
-    # 2) Modelos cadastrados que exigem prefixo PLACA/PLAC no texto
-    for modelo in modelos_usuario:
-        if not re.search(r'PLAC', modelo, re.IGNORECASE):
-            continue
+    for modelo in modelos_usuario or []:
         regex_dinamico = converter_modelo_para_regex(modelo)
         if not regex_dinamico:
             continue
-        for match in re.finditer(regex_dinamico, memoria_obs, re.IGNORECASE):
-            _adicionar(match.group(1))
-
-    # 3) Demais modelos (com filtro anti FAB 2021)
-    for modelo in modelos_usuario:
-        if re.search(r'PLAC', modelo, re.IGNORECASE):
-            continue
-        regex_dinamico = converter_modelo_para_regex(modelo)
-        if not regex_dinamico:
-            continue
-        for match in re.finditer(regex_dinamico, memoria_obs, re.IGNORECASE):
+        for match in re.finditer(regex_dinamico, memoria_obs):
             _adicionar(match.group(1))
 
     return placas
@@ -80,9 +59,46 @@ def _placa_para_mensagem_erro(placas_encontradas, campo_veiculo_valor):
     return valor or '?'
 
 
-def processar_veiculo(page, log, idx, memoria_obs, modelos_usuario):
+def _tentar_preencher_placa_campo(campo_veiculo, placa_tentativa, log):
+    log(f'-> Testando preenchimento com a Placa: {placa_tentativa}')
+    campo_veiculo.click()
+    campo_veiculo.clear()
+    campo_veiculo.press_sequentially(placa_tentativa, delay=100)
+    time.sleep(1)
+    campo_veiculo.press('Enter')
+    time.sleep(1.5)
+    campo_veiculo.press('Enter')
+    time.sleep(0.5)
+    campo_veiculo.press('Tab')
+
+    time.sleep(2)
+    valor_atual_veiculo = campo_veiculo.input_value().strip().upper()
+
+    if (
+        'CADASTRO NAO ENCONTRADO' in valor_atual_veiculo
+        or 'REFAZER CONSULTA' in valor_atual_veiculo
+        or 'SEM DADOS' in valor_atual_veiculo
+        or not valor_atual_veiculo
+    ):
+        log(f"-> ❌ Placa '{placa_tentativa}' rejeitada pelo sistema (Retornou: {valor_atual_veiculo}).")
+        campo_veiculo.clear()
+        return False, valor_atual_veiculo
+
+    log(f'-> ✅ SUCESSO! Veículo validado pelo sistema: {valor_atual_veiculo}')
+    return True, valor_atual_veiculo
+
+
+def processar_veiculo(page, log, idx, memoria_obs, modelos_usuario, placa_painel=None):
     campo_veiculo = page.locator(f'input[id="formCad:tableItemNota:{idx}:veiculoInput"]')
     valor_v = campo_veiculo.input_value().strip()
+
+    placa_painel = _normalizar_placa(placa_painel) if placa_painel else ''
+    if placa_painel:
+        log(f'-> Placa informada no painel do robô: {placa_painel}')
+        ok, valor_atual = _tentar_preencher_placa_campo(campo_veiculo, placa_painel, log)
+        if ok:
+            return valor_atual, [placa_painel]
+        return False, [placa_painel]
 
     if valor_v and 'SEM DADOS' not in valor_v.upper():
         log(f'-> Veículo já identificado na tela: {valor_v}')
@@ -98,30 +114,8 @@ def processar_veiculo(page, log, idx, memoria_obs, modelos_usuario):
         log(f'-> ⚠️ Nenhuma placa extraída! Modelos testados: {modelos_usuario}')
 
     for placa_tentativa in placas_encontradas:
-        log(f'-> Testando preenchimento com a Placa: {placa_tentativa}')
-        campo_veiculo.click()
-        campo_veiculo.clear()
-        campo_veiculo.press_sequentially(placa_tentativa, delay=100)
-        time.sleep(1)
-        campo_veiculo.press('Enter')
-        time.sleep(1.5)
-        campo_veiculo.press('Enter')
-        time.sleep(0.5)
-        campo_veiculo.press('Tab')
-
-        time.sleep(2)
-        valor_atual_veiculo = campo_veiculo.input_value().strip().upper()
-
-        if (
-            'CADASTRO NAO ENCONTRADO' in valor_atual_veiculo
-            or 'REFAZER CONSULTA' in valor_atual_veiculo
-            or 'SEM DADOS' in valor_atual_veiculo
-            or not valor_atual_veiculo
-        ):
-            log(f"-> ❌ Placa '{placa_tentativa}' rejeitada pelo sistema (Retornou: {valor_atual_veiculo}).")
-            campo_veiculo.clear()
-        else:
-            log(f'-> ✅ SUCESSO! Veículo validado pelo sistema: {valor_atual_veiculo}')
+        ok, valor_atual_veiculo = _tentar_preencher_placa_campo(campo_veiculo, placa_tentativa, log)
+        if ok:
             return valor_atual_veiculo, placas_encontradas
 
     return False, placas_encontradas

@@ -1,6 +1,5 @@
 import customtkinter as ctk
 from tkinter import messagebox
-import re
 import database_setup as db # Importamos o banco de dados aqui!
 
 class PainelFiltros(ctk.CTkFrame):
@@ -106,7 +105,33 @@ class PainelFiltros(ctk.CTkFrame):
             font=('Arial', 11),
             wraplength=220,
         )
-        self.lbl_aviso_filial_ue.pack(pady=(0, 12), padx=12, anchor='w')
+        self.lbl_aviso_filial_ue.pack(pady=(0, 8), padx=12, anchor='w')
+
+        ctk.CTkLabel(
+            frame_data,
+            text='Cod. Fornecedores (A Faturar):',
+        ).pack()
+        self.entry_fornecedores_fatura = ctk.CTkEntry(
+            frame_data,
+            width=200,
+            justify='center',
+            placeholder_text='Ex: 243, 1205, 88',
+        )
+        self.entry_fornecedores_fatura.pack(pady=5, padx=20)
+
+        self.lbl_dica_fornecedores = ctk.CTkLabel(
+            frame_data,
+            text=(
+                'Após importar CP: se o fornecedor da nota estiver na lista, '
+                'desmarca NF Fatura, marca A Faturar, remove todas as parcelas '
+                'e segue o fluxo normal (despesa/filial/UE, itens, finalizar).'
+            ),
+            justify='left',
+            text_color='#9ecbff',
+            font=('Arial', 11),
+            wraplength=220,
+        )
+        self.lbl_dica_fornecedores.pack(pady=(0, 12), padx=12, anchor='w')
 
         # ==========================================
         # COLUNA 2: MODELOS DE LEITURA
@@ -117,12 +142,42 @@ class PainelFiltros(ctk.CTkFrame):
         ctk.CTkLabel(frame_leitura, text="🔍 Placa e KM", font=("Arial", 14, "bold")).pack(pady=(15, 10))
 
         ctk.CTkLabel(frame_leitura, text="Modelos de Placa:").pack()
-        self.entry_placas = ctk.CTkEntry(frame_leitura, width=220, placeholder_text="Ex: PLACA: AAA-1A11")
+        self.entry_placas = ctk.CTkEntry(
+            frame_leitura, width=220, placeholder_text="Ex: Placa : AAA-1A11",
+        )
         self.entry_placas.pack(pady=5, padx=20)
+        self.lbl_dica_placas = ctk.CTkLabel(
+            frame_leitura,
+            text=(
+                "Use A = letra e 1 = número na placa. "
+                "O texto antes da placa deve ser igual ao da NFe "
+                "(ex.: Placa : ou Placa:). Maiúsculas e acentos importam."
+            ),
+            justify='left',
+            text_color='#9ecbff',
+            font=('Arial', 10),
+            wraplength=220,
+        )
+        self.lbl_dica_placas.pack(pady=(0, 8), padx=12, anchor='w')
 
         ctk.CTkLabel(frame_leitura, text="Modelos de KM:").pack()
-        self.entry_km = ctk.CTkEntry(frame_leitura, width=220, placeholder_text="Ex: KM: 1, ODO 1")
+        self.entry_km = ctk.CTkEntry(
+            frame_leitura, width=220, placeholder_text="Ex: odometro : 111.111,11",
+        )
         self.entry_km.pack(pady=5, padx=20)
+        self.lbl_dica_km = ctk.CTkLabel(
+            frame_leitura,
+            text=(
+                "Substitua os dígitos do KM por 1, mantendo ponto e vírgula. "
+                "Ex.: se na NFe vem odometro : 608.394,00, cadastre "
+                "odometro : 111.111,11. Odometro (O maiúsculo) é diferente de odometro."
+            ),
+            justify='left',
+            text_color='#9ecbff',
+            font=('Arial', 10),
+            wraplength=220,
+        )
+        self.lbl_dica_km.pack(pady=(0, 12), padx=12, anchor='w')
 
         # ==========================================
         # COLUNA 3: CÓDIGOS ERP (NOVO)
@@ -216,6 +271,8 @@ class PainelFiltros(ctk.CTkFrame):
         self.lbl_aviso_filial_ue.configure(wraplength=wrap)
         self.lbl_dica_ultimos_30_dias.configure(wraplength=wrap)
         self.lbl_dica_hoje_apenas.configure(wraplength=wrap)
+        self.lbl_dica_placas.configure(wraplength=wrap)
+        self.lbl_dica_km.configure(wraplength=wrap)
         self.btn_salvar.configure(width=min(max(largura - 60, 240), 340))
 
     def _alternar_periodo_30_dias(self):
@@ -259,6 +316,11 @@ class PainelFiltros(ctk.CTkFrame):
             self.entry_cod_filial.insert(0, dados_salvos.get('cod_filial', ''))
             self.entry_cod_unidade_embarque.delete(0, 'end')
             self.entry_cod_unidade_embarque.insert(0, dados_salvos.get('cod_unidade_embarque', ''))
+
+            self.entry_fornecedores_fatura.delete(0, 'end')
+            self.entry_fornecedores_fatura.insert(
+                0, dados_salvos.get('fornecedores_fatura_afaturar', ''),
+            )
         
         self._aplicar_estado_combos_periodo()
 
@@ -274,7 +336,7 @@ class PainelFiltros(ctk.CTkFrame):
             self.entry_km.delete(0, "end")
             self.entry_km.insert(0, modelos_salvos_km)
         else:
-            self.entry_km.insert(0, "KM: 1, KM 1, HIDROMETRO: 1, ODO: 1")
+            self.entry_km.insert(0, "odometro : 111.111,11")
             
         try:
             cods = db.carregar_codigos_combustiveis()
@@ -296,53 +358,24 @@ class PainelFiltros(ctk.CTkFrame):
 
     def salvar_filtros_no_banco(self):
         try:
-            modelos_placa_digitados = self.entry_placas.get()
-            modelos_km_digitados = self.entry_km.get() # Pega o texto do KM
-            
-            # =======================================================
-            # VALIDAÇÃO DAS PLACAS
-            # =======================================================
-            modelos_placa = [m.strip().upper() for m in modelos_placa_digitados.split(',') if m.strip()]
-            for m in modelos_placa:
-                if re.search(r'[02-9]', m):
-                    messagebox.showwarning("⚠️ Validação de Placa", f"Você digitou números inválidos no modelo: '{m}'\nUse APENAS o número '1'.")
-                    return 
-                if not re.search(r'([A1][A1\-\s]{5,}[A1])', m):
-                    messagebox.showwarning("⚠️ Validação de Placa", f"Formato inválido no modelo: '{m}'\nExemplo correto: PLAC AAA-1111")
-                    return
+            modelos_placa_digitados = self.entry_placas.get().strip()
+            modelos_km_digitados = self.entry_km.get().strip()
 
-            # =======================================================
-            # VALIDAÇÃO DO KM (NOVO CÃO DE GUARDA)
-            # =======================================================
-            modelos_km = [m.strip().upper() for m in modelos_km_digitados.split(',') if m.strip()]
-            for m in modelos_km:
-                # 1. Bloqueia se o usuário digitar uma km real com números de 0, 2 a 9
-                if re.search(r'[02-9]', m):
-                    messagebox.showwarning(
-                        "⚠️ Validação de KM", 
-                        f"Você digitou números inválidos no modelo: '{m}'\n\n"
-                        "Regra: Use APENAS o número '1' para indicar onde começa a quilometragem.\n"
-                        "Exemplo correto: HIDRO: 1"
-                    )
-                    return
-                
-                # 2. Verifica se a máscara contém o indicador '1'
-                if '1' not in m:
-                    messagebox.showwarning(
-                        "⚠️ Validação de KM", 
-                        f"Faltou o indicador de posição no modelo: '{m}'\n\n"
-                        "Regra: Você deve colocar o número '1' para o robô saber onde extrair a numeração.\n"
-                        "Exemplo correto: KM 1"
-                    )
-                    return
+            ok_placa, msg_placa, _ = db.validar_lista_modelos_placa(modelos_placa_digitados)
+            if not ok_placa:
+                messagebox.showwarning('Validação de Placa', msg_placa)
+                return
 
-            # =======================================================
-            # SALVA TUDO NO BANCO
-            # =======================================================
+            ok_km, msg_km, _ = db.validar_lista_modelos_km(modelos_km_digitados)
+            if not ok_km:
+                messagebox.showwarning('Validação de KM', msg_km)
+                return
+
             mes_escolhido = self.combo_mes.get()
             ano_escolhido = self.combo_ano.get()
             cod_filial = self.entry_cod_filial.get().strip()
             cod_unidade = self.entry_cod_unidade_embarque.get().strip()
+            fornecedores_fatura = self.entry_fornecedores_fatura.get().strip()
             ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
             hoje_apenas = bool(self.var_hoje_apenas.get())
 
@@ -353,6 +386,7 @@ class PainelFiltros(ctk.CTkFrame):
                 cod_unidade,
                 ultimos_30_dias=ultimos_30_dias,
                 hoje_apenas=hoje_apenas,
+                fornecedores_fatura_afaturar=fornecedores_fatura,
             )
             db.salvar_modelos_placa(modelos_placa_digitados)
             db.salvar_modelos_km(modelos_km_digitados) # Salva os KMs
@@ -373,7 +407,7 @@ class PainelFiltros(ctk.CTkFrame):
             if sucesso_f:
                 messagebox.showinfo(
                     "✅ Sucesso",
-                    "Configurações salvas (período, hoje/30 dias, filial, unidade, placas e KMs).",
+                    "Configurações salvas (período, filial, unidade, fornecedores, placas e KMs).",
                 )
             else:
                 messagebox.showerror("❌ Erro", msg_f)

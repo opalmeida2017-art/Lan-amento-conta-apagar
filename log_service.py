@@ -267,3 +267,38 @@ def formatar_evento(evento):
         f" [{(evento or {}).get('origem', 'SISTEMA')}]"
         f"{prefixo_sessao} {(evento or {}).get('mensagem', '')}"
     )
+
+
+def periodo_suporte(dt_ini, dt_fim):
+    """Converte DD/MM/AAAA em intervalo 00:00:00 até 23:59:59."""
+    inicio = parse_filtro_data_hora(dt_ini, fim_do_dia=False)
+    fim = parse_filtro_data_hora(dt_fim, fim_do_dia=True)
+    if not inicio or not fim:
+        raise ValueError("Informe data inicial e final no formato DD/MM/AAAA.")
+    if inicio > fim:
+        raise ValueError("A data inicial não pode ser maior que a data final.")
+    return inicio, fim
+
+
+def listar_logs_por_periodo(dt_ini="", dt_fim=""):
+    """Lista logs do período (00:00 da inicial até 23:59 da final)."""
+    inicio, fim = periodo_suporte(dt_ini, dt_fim)
+    garantir_tabelas()
+    conn = sqlite3.connect(_db_path())
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT sessao_id, origem, nivel, mensagem, criado_em
+        FROM logs_execucao
+        WHERE criado_em >= ? AND criado_em <= ?
+        ORDER BY id ASC
+        """,
+        (
+            inicio.strftime("%Y-%m-%d %H:%M:%S"),
+            fim.strftime("%Y-%m-%d %H:%M:%S"),
+        ),
+    )
+    linhas = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return linhas, inicio, fim

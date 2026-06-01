@@ -159,8 +159,9 @@ class AbaExecucao(ctk.CTkFrame):
         frame_tabela.grid_rowconfigure(0, weight=1)
 
         colunas = (
-            "insercao", "cod_interno", "status", "forn", "nota", "data", "valor",
-            "sit_nfe", "chave", "filial", "user", "erro", "observacao", "estoque", "arquiva",
+            "insercao", "cod_interno", "status", "forn", "nota", "placa", "km",
+            "data", "valor", "sit_nfe", "chave", "filial", "user", "erro",
+            "observacao", "estoque", "arquiva",
         )
         self.tabela_nf = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=8)
         
@@ -177,6 +178,8 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.heading("status", text="Status")
         self.tabela_nf.heading("forn", text="Fornecedor")
         self.tabela_nf.heading("nota", text="No.Nota")
+        self.tabela_nf.heading("placa", text="Placa")
+        self.tabela_nf.heading("km", text="KM")
         self.tabela_nf.heading("data", text="Data Em.")
         self.tabela_nf.heading("valor", text="Valor")
         self.tabela_nf.heading("sit_nfe", text="Sit. NFe")
@@ -193,6 +196,8 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.column("status", width=84, anchor="center")
         self.tabela_nf.column("forn", width=180, anchor="w")
         self.tabela_nf.column("nota", width=74, anchor="center")
+        self.tabela_nf.column("placa", width=88, anchor="center")
+        self.tabela_nf.column("km", width=72, anchor="center")
         self.tabela_nf.column("data", width=88, anchor="center")
         self.tabela_nf.column("valor", width=92, anchor="e")
         self.tabela_nf.column("sit_nfe", width=84, anchor="center")
@@ -208,6 +213,7 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.tag_configure("linha_escura", background=self.COR_LINHA_ESCURA)
 
         self.tabela_nf.bind("<ButtonRelease-1>", self.evento_clique_unico)
+        self.tabela_nf.bind("<Double-1>", self.evento_duplo_clique_edicao)
         self._popup_detalhe = None
 
         frame_rodape = ctk.CTkFrame(self, fg_color="transparent")
@@ -217,7 +223,15 @@ class AbaExecucao(ctk.CTkFrame):
         self.status_label = ctk.CTkLabel(
             frame_rodape, text="Status: Aguardando...", font=("Arial", 12), text_color="gray",
         )
-        self.status_label.grid(row=0, column=0, sticky="w", pady=(0, 5))
+        self.status_label.grid(row=0, column=0, sticky="w", pady=(0, 2))
+
+        self.lbl_dica_placa_km = ctk.CTkLabel(
+            frame_rodape,
+            text="Dica: duplo clique nas colunas Placa e KM para editar (sem ponto, espaço ou traço).",
+            font=("Arial", 11),
+            text_color="#9ecbff",
+        )
+        self.lbl_dica_placa_km.grid(row=1, column=0, sticky="w", pady=(0, 5))
 
         self._cor_botao_verde = "#2e7d32"
         self._cor_botao_verde_hover = "#1b5e20"
@@ -233,7 +247,7 @@ class AbaExecucao(ctk.CTkFrame):
             height=45,
             command=self.chamar_robo,
         )
-        self.btn_iniciar_robo.grid(row=0, column=1, sticky="e")
+        self.btn_iniciar_robo.grid(row=0, column=1, rowspan=2, sticky="e")
 
         self.after(500, self.atualizar_tabela_dashboard)
 
@@ -512,7 +526,15 @@ class AbaExecucao(ctk.CTkFrame):
             return
 
         status_atual = self._normalizar_status((nota_item or {}).get('status'))
-        if status_atual == "IMPORTADO":
+        if status_atual in ("IMPORTADO", "PROCESSADO"):
+            resposta = messagebox.askyesno(
+                "Lançar nota",
+                f"A nota {nota_filtrada} já consta como "
+                f"{status_atual.title()} no painel.\n\n"
+                "Deseja tentar o lançamento novamente?",
+            )
+            if resposta:
+                self.controller.iniciar_robo_para_nota(nota_filtrada)
             return
 
         resposta = messagebox.askyesno(
@@ -585,6 +607,8 @@ class AbaExecucao(ctk.CTkFrame):
                             limpa_none(nota_item.get('status')),
                             limpa_none(nota_item.get('fornecedor')),
                             limpa_none(nota_item.get('num_nota')),
+                            db.normalizar_placa_painel(nota_item.get('painel_placa')),
+                            db.normalizar_km_painel(nota_item.get('painel_km')),
                             limpa_none(nota_item.get('data_em')),
                             limpa_none(nota_item.get('valor')),
                             limpa_none(nota_item.get('sit_nfe')),
@@ -612,6 +636,126 @@ class AbaExecucao(ctk.CTkFrame):
         except Exception as e:
             print(f"[ERRO CRÍTICO NA TABELA] ❌ Falha ao atualizar: {e}")
 
+    def _indice_coluna(self, nome_coluna):
+        try:
+            return list(self.tabela_nf["columns"]).index(nome_coluna)
+        except ValueError:
+            return -1
+
+    def _solicitar_texto_painel(self, titulo, texto_inicial='', placeholder=''):
+        popup = ctk.CTkToplevel(self)
+        popup.title(titulo)
+        popup.geometry("360x160")
+        popup.attributes("-topmost", True)
+        popup.resizable(False, False)
+        resultado = {"valor": None}
+
+        ctk.CTkLabel(popup, text=titulo, font=("Arial", 14, "bold")).pack(pady=(14, 8))
+        entry = ctk.CTkEntry(popup, width=300, placeholder_text=placeholder)
+        entry.pack(pady=4)
+        if texto_inicial:
+            entry.insert(0, texto_inicial)
+
+        def confirmar():
+            resultado["valor"] = entry.get()
+            popup.destroy()
+
+        def cancelar():
+            popup.destroy()
+
+        frame_btn = ctk.CTkFrame(popup, fg_color="transparent")
+        frame_btn.pack(pady=12)
+        ctk.CTkButton(frame_btn, text="Salvar", width=90, command=confirmar).pack(side="left", padx=6)
+        ctk.CTkButton(
+            frame_btn, text="Cancelar", width=90, fg_color="gray", command=cancelar,
+        ).pack(side="left", padx=6)
+
+        popup.protocol("WM_DELETE_WINDOW", cancelar)
+        entry.focus_set()
+        popup.grab_set()
+        self.wait_window(popup)
+        return resultado["valor"]
+
+    def evento_duplo_clique_edicao(self, event):
+        regiao = self.tabela_nf.identify_region(event.x, event.y)
+        if regiao != "cell":
+            return
+        coluna_clicada = self.tabela_nf.identify_column(event.x)
+        item_clicado = self.tabela_nf.identify_row(event.y)
+        if not item_clicado:
+            return
+
+        if coluna_clicada == "#6":
+            self._editar_placa_painel(item_clicado)
+        elif coluna_clicada == "#7":
+            self._editar_km_painel(item_clicado)
+
+    def _editar_placa_painel(self, item_id):
+        valores = list(self.tabela_nf.item(item_id, "values"))
+        idx_placa = self._indice_coluna("placa")
+        idx_chave = self._indice_coluna("chave")
+        idx_nota = self._indice_coluna("nota")
+        if idx_placa < 0:
+            return
+
+        atual = valores[idx_placa] if len(valores) > idx_placa else ""
+        novo = self._solicitar_texto_painel(
+            "Placa (painel)",
+            atual,
+            "Somente letras e números",
+        )
+        if novo is None:
+            return
+
+        ok, placa_norm = db.validar_placa_painel(novo)
+        if not ok:
+            messagebox.showwarning("Placa inválida", placa_norm)
+            return
+
+        chave = valores[idx_chave] if idx_chave >= 0 and len(valores) > idx_chave else ""
+        num_nota = valores[idx_nota] if idx_nota >= 0 and len(valores) > idx_nota else ""
+        try:
+            self.controller.atualizar_painel_placa(chave, num_nota, placa_norm)
+        except ValueError as exc:
+            messagebox.showwarning("Placa", str(exc))
+            return
+
+        valores[idx_placa] = placa_norm
+        self.tabela_nf.item(item_id, values=valores)
+
+    def _editar_km_painel(self, item_id):
+        valores = list(self.tabela_nf.item(item_id, "values"))
+        idx_km = self._indice_coluna("km")
+        idx_chave = self._indice_coluna("chave")
+        idx_nota = self._indice_coluna("nota")
+        if idx_km < 0:
+            return
+
+        atual = valores[idx_km] if len(valores) > idx_km else ""
+        novo = self._solicitar_texto_painel(
+            "KM (painel)",
+            atual,
+            "Somente números",
+        )
+        if novo is None:
+            return
+
+        ok, km_norm = db.validar_km_painel(novo)
+        if not ok:
+            messagebox.showwarning("KM inválido", km_norm)
+            return
+
+        chave = valores[idx_chave] if idx_chave >= 0 and len(valores) > idx_chave else ""
+        num_nota = valores[idx_nota] if idx_nota >= 0 and len(valores) > idx_nota else ""
+        try:
+            self.controller.atualizar_painel_km(chave, num_nota, km_norm)
+        except ValueError as exc:
+            messagebox.showwarning("KM", str(exc))
+            return
+
+        valores[idx_km] = km_norm
+        self.tabela_nf.item(item_id, values=valores)
+
     def evento_clique_unico(self, event):
         regiao = self.tabela_nf.identify_region(event.x, event.y)
         if regiao != "cell":
@@ -623,56 +767,56 @@ class AbaExecucao(ctk.CTkFrame):
 
         valores = list(self.tabela_nf.item(item_clicado, "values"))
         status = str(valores[2]).strip().upper() if len(valores) > 2 and valores[2] else ""
-        chave_da_nota = str(valores[8]).strip() if len(valores) > 8 else ""
-        erro = str(valores[11]).strip() if len(valores) > 11 else ""
-        observacao = str(valores[12]).strip() if len(valores) > 12 else ""
+        chave_da_nota = str(valores[10]).strip() if len(valores) > 10 else ""
+        erro = str(valores[13]).strip() if len(valores) > 13 else ""
+        observacao = str(valores[14]).strip() if len(valores) > 14 else ""
 
-        # Coluna Arquiva (#15) — não altera se arquivada fixa (cancelada/rejeitada)
-        if coluna_clicada == "#15":
+        # Coluna Arquiva (#17) — não altera se arquivada fixa (cancelada/rejeitada)
+        if coluna_clicada == "#17":
             if db.nota_erro_arquivo_indisponivel(erro):
                 return
             if not self._pode_marcar_arquiva(status):
                 return
-            if not chave_da_nota or len(valores) < 15 or not str(valores[14]).strip():
+            if not chave_da_nota or len(valores) < 17 or not str(valores[16]).strip():
                 return
-            estado_atual = valores[14]
+            estado_atual = valores[16]
             if "☑" in estado_atual:
                 novo_estado_tela = "☐"
                 estado_banco = "☐"
             else:
                 novo_estado_tela = "☑"
                 estado_banco = "☑"
-            valores[14] = novo_estado_tela
+            valores[16] = novo_estado_tela
             self.tabela_nf.item(item_clicado, values=valores)
             self.controller.atualizar_arquiva(chave_da_nota, estado_banco)
             return
 
-        # Coluna NFe p/ Estoque (#14) — alternar checkbox
-        if coluna_clicada == "#14":
+        # Coluna NFe p/ Estoque (#16) — alternar checkbox
+        if coluna_clicada == "#16":
             if db.nota_erro_arquivo_indisponivel(erro):
                 return
-            if not self._mostra_checkbox_estoque(status) or len(valores) < 14 or not str(valores[13]).strip():
+            if not self._mostra_checkbox_estoque(status) or len(valores) < 16 or not str(valores[15]).strip():
                 return
-            estado_atual = valores[13]
+            estado_atual = valores[15]
             if "☑" in estado_atual:
                 novo_estado_tela = "☐"
                 estado_banco = "☐"
             else:
                 novo_estado_tela = "☑"
                 estado_banco = "☑"
-            valores[13] = novo_estado_tela
+            valores[15] = novo_estado_tela
             self.tabela_nf.item(item_clicado, values=valores)
             self.controller.atualizar_estoque(chave_da_nota, estado_banco)
             return
 
-        # Só abre popup ao clicar na coluna Observação (#13)
-        if coluna_clicada == "#13":
+        # Só abre popup ao clicar na coluna Observação (#15)
+        if coluna_clicada == "#15":
             if observacao:
                 self.mostrar_popup_texto("Observação da NFe", observacao)
             return
 
-        # Só abre popup ao clicar na coluna Erro Importação (#12), se houver erro
-        if coluna_clicada == "#12":
+        # Só abre popup ao clicar na coluna Erro Importação (#14), se houver erro
+        if coluna_clicada == "#14":
             if status == "ERRO" and erro:
                 self.mostrar_popup_texto("Motivo do Erro", erro)
             return

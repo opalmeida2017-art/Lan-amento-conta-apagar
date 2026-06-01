@@ -285,6 +285,78 @@ def _normalizar_destinatarios(destinatarios_texto, remetente):
     return [str(remetente or "").strip()]
 
 
+EMAIL_SUPORTE_LOG = "op.almeida2017@gmail.com"
+
+
+def enviar_mensagem_smtp(assunto, corpo_texto, anexos=None, destinatarios=None):
+    """Envia e-mail usando SMTP configurado em Configurações."""
+    cfg = db.carregar_configuracoes() or {}
+    smtp_host, porta_normalizada = _normalizar_smtp_host_porta(
+        cfg.get("smtp"),
+        cfg.get("porta") or "",
+    )
+    usuario = str(cfg.get("user_email") or "").strip()
+    senha = str(cfg.get("senha_email") or "").strip()
+    porta = porta_normalizada
+    usar_ssl = bool(cfg.get("ssl"))
+    destinos = destinatarios or [EMAIL_SUPORTE_LOG]
+    if isinstance(destinos, str):
+        destinos = [destinos]
+
+    if not smtp_host or not usuario or not senha or not porta:
+        raise RuntimeError(
+            "Configuração de e-mail incompleta.\n"
+            "Preencha SMTP, porta, e-mail e senha em Configurações → Disparo de E-mail."
+        )
+
+    mensagem = EmailMessage()
+    mensagem["Subject"] = str(assunto or "").strip()
+    mensagem["From"] = usuario
+    mensagem["To"] = ", ".join(destinos)
+    mensagem.set_content(str(corpo_texto or ""))
+
+    for anexo in anexos or []:
+        caminho = Path(anexo["path"])
+        with open(caminho, "rb") as arquivo:
+            mensagem.add_attachment(
+                arquivo.read(),
+                maintype=anexo.get("maintype", "application"),
+                subtype=anexo.get("subtype", "octet-stream"),
+                filename=anexo.get("filename") or caminho.name,
+            )
+
+    try:
+        with _criar_cliente_smtp(smtp_host, porta, usar_ssl) as cliente:
+            cliente.login(usuario, senha)
+            cliente.send_message(mensagem)
+    except smtplib.SMTPAuthenticationError as exc:
+        detalhe = ""
+        try:
+            detalhe = (exc.smtp_error or b"").decode("utf-8", errors="ignore")
+        except Exception:
+            detalhe = str(exc)
+
+        if "gmail" in smtp_host.lower():
+            raise RuntimeError(
+                "Falha de autenticação no Gmail SMTP.\n"
+                "Use senha de app do Google (16 caracteres), não a senha normal da conta.\n"
+                "Configuração recomendada: porta 465 com SSL marcado OU porta 587 com SSL desmarcado.\n\n"
+                f"Detalhe técnico: {detalhe or exc}"
+            ) from exc
+        raise RuntimeError(f"Falha de autenticação SMTP: {detalhe or exc}") from exc
+    except smtplib.SMTPNotSupportedError as exc:
+        raise RuntimeError(
+            "Servidor SMTP não suportou autenticação.\n"
+            "Verifique o campo SMTP sem http/https (ex: smtp.gmail.com) "
+            "e a combinação porta/SSL (465 com SSL marcado ou 587 com SSL desmarcado).\n\n"
+            f"Detalhe técnico: {exc}"
+        ) from exc
+    except smtplib.SMTPException as exc:
+        raise RuntimeError(f"Falha ao enviar e-mail via SMTP: {exc}") from exc
+
+    return {"destinatarios": destinos, "remetente": usuario}
+
+
 def enviar_relatorios_agendados(configuracao, referencia=None):
     cfg = configuracao or {}
     smtp_host, porta_normalizada = _normalizar_smtp_host_porta(

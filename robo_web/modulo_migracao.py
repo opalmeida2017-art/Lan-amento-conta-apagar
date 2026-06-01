@@ -4,6 +4,7 @@ from playwright.sync_api import sync_playwright
 from robo_web import modulo_frota
 from robo_web.erp_lock import ERP_LOCK
 from robo_web.runtime_config import usar_headless
+from robo_web.utils import fazer_login_erp
 
 
 def iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, log_callback, grupo_atual="Filtrado"):
@@ -31,13 +32,7 @@ def iniciar_migracao_lote(config, itens_codigos, novo_grupo_nome, log_callback, 
                 context = browser.new_context(viewport={"width": 1300, "height": 850})
                 page = context.new_page()
 
-                log("🔐 Fazendo login no ERP...")
-                page.goto(config['link'], timeout=60000)
-                page.locator('input[type="text"]').first.fill(config['user_sis'])
-                page.locator('input[type="password"]').first.fill(config['senha_sis'])
-                page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click(force=True)
-                page.wait_for_load_state("load", timeout=20000)
-                page.wait_for_timeout(500)
+                fazer_login_erp(page, config, log=log)
 
                 log("📂 Abrindo Cadastros > Itens Despesa/Estoque...")
                 page.locator('div[id="formMenu:j_idt128_label"]').click(force=True)

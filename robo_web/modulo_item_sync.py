@@ -5,6 +5,7 @@ import pandas as pd
 from playwright.sync_api import sync_playwright
 import database_setup as db
 from robo_web.runtime_config import usar_headless
+from robo_web.utils import fazer_login_erp
 
 def baixar_e_importar_itens():
     try:
@@ -34,16 +35,9 @@ def baixar_e_importar_itens():
         page = context.new_page()
         
         try:
-            # 1. LOGIN
             print(" -> Fazendo login no ERP...")
-            page.goto(config['link'])
-            page.wait_for_load_state("load")
-            page.locator('input[type="text"]').first.fill(config['user_sis'])
-            page.locator('input[type="password"]').first.fill(config['senha_sis'])
-            page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click()
-            page.wait_for_load_state("networkidle")
-            
-            # 2. NAVEGAÇÃO PARA EXPORTAÇÕES
+            fazer_login_erp(page, config, log=print)
+
             print(" -> Acessando módulo de Exportações...")
             page.locator('text="Exp./Imp."').first.click()
             time.sleep(1)

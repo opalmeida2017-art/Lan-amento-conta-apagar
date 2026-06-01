@@ -3,6 +3,12 @@ licenca_config.py
 secret.key
 .env
 
+# Ferramentas internas de licença / painel (uso local apenas)
+painel_licencas.py
+PAINEL_LICENCAS.md
+rodar_painel_licencas.bat
+gerador_licencas.py
+
 # Bancos de dados locais
 *.db
 *.sqlite

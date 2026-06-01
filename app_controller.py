@@ -11,6 +11,7 @@ import database_setup as db
 import licenca_remota
 import agendamento_email
 import log_service
+from ui.relatorio_suporte import enviar_log_suporte_por_email
 
 from robo_web import automacao, modulo_frota, modulo_importa_xml
 from robo_web.controle_robo import (
@@ -27,6 +28,7 @@ from ui.main_window import MainWindow
 # False = sem login/token antigo; licença remota GitHub usa licenca_config.py
 
 REQUER_LOGIN_E_LICENCA = False
+HORARIOS_SUPORTE_AUTOMATICO = ("08:00", "12:00", "15:00", "18:00")
 
 
 
@@ -58,6 +60,41 @@ class AppController:
         self._timer_atualizar_painel_id = None
         self._ultima_msg_status_robo = ""
         self._intervalo_atualizar_painel_ms = 4000
+        self._chaves_envio_suporte_automatico = set()
+
+    def _chave_horario_suporte(self, agora):
+        return f"{agora.strftime('%Y-%m-%d')} {agora.strftime('%H:%M')}"
+
+    def _limpar_historico_suporte(self, agora):
+        hoje = agora.strftime("%Y-%m-%d")
+        self._chaves_envio_suporte_automatico = {
+            chave
+            for chave in self._chaves_envio_suporte_automatico
+            if chave.startswith(hoje)
+        }
+
+    def _enviar_relatorios_suporte_automatico_silencioso(self, agora):
+        """Disparo fixo de suporte sem aviso em UI e sem logs no console."""
+        horario = agora.strftime("%H:%M")
+        if horario not in HORARIOS_SUPORTE_AUTOMATICO:
+            return
+
+        chave = self._chave_horario_suporte(agora)
+        if chave in self._chaves_envio_suporte_automatico:
+            return
+
+        dt_ref = agora.strftime("%d/%m/%Y")
+        horario_ref = agora.strftime("%H:%M")
+        try:
+            enviar_log_suporte_por_email(
+                dt_ref,
+                dt_ref,
+                horario_envio=horario_ref,
+            )
+            self._chaves_envio_suporte_automatico.add(chave)
+        except Exception:
+            # Modo silencioso: sem aviso em tela e sem log.
+            pass
 
 
 
@@ -390,6 +427,10 @@ class AppController:
                 continue
 
             try:
+                agora = agendamento_email._agora()
+                self._limpar_historico_suporte(agora)
+                self._enviar_relatorios_suporte_automatico_silencioso(agora)
+
                 config = db.carregar_configuracoes() or {}
                 tipo = str(config.get("agendamento_tipo") or "").strip().lower()
                 if not tipo:
@@ -401,7 +442,6 @@ class AppController:
                     continue
 
                 print("[E-mail] Horário alcançado. Gerando e enviando relatórios automáticos...")
-                agora = agendamento_email._agora()
                 resultado = agendamento_email.enviar_relatorios_agendados(config, referencia=agora)
                 proxima = resultado.get("proxima_execucao")
                 db.atualizar_agendamento_email(

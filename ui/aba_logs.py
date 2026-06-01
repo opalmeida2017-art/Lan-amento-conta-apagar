@@ -2,6 +2,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 import log_service
+from ui.relatorio_suporte import enviar_log_suporte_por_email
 
 
 class AbaLogs(ctk.CTkFrame):
@@ -88,6 +89,16 @@ class AbaLogs(ctk.CTkFrame):
         )
         self.btn_limpar.grid(row=2, column=4, padx=4, pady=(0, 10), sticky="w")
 
+        self.btn_enviar_suporte = ctk.CTkButton(
+            frame_topo,
+            text="Enviar log p/ Suporte",
+            width=160,
+            fg_color="#1565c0",
+            hover_color="#0d47a1",
+            command=self._abrir_popup_suporte,
+        )
+        self.btn_enviar_suporte.grid(row=2, column=5, padx=(10, 4), pady=(0, 10), sticky="w")
+
         self.lbl_status = ctk.CTkLabel(
             frame_topo, text="Status: carregando logs...", text_color="gray",
         )
@@ -137,6 +148,152 @@ class AbaLogs(ctk.CTkFrame):
 
         entry.delete(0, "end")
         entry.insert(0, novo_texto)
+
+    def _formatar_data_teclado(self, event):
+        entry = event.widget
+        if event.keysym == "BackSpace":
+            return
+        texto = "".join(c for c in entry.get() if c.isdigit())[:8]
+        partes = []
+        if len(texto) >= 2:
+            partes.append(texto[:2])
+        elif texto:
+            partes.append(texto)
+        if len(texto) > 2:
+            partes.append(texto[2:4])
+        if len(texto) > 4:
+            partes.append(texto[4:8])
+        entry.delete(0, "end")
+        entry.insert(0, "/".join(p for p in partes if p))
+
+    def _abrir_popup_suporte(self):
+        popup = ctk.CTkToplevel(self)
+        popup.title("Enviar log para suporte")
+        popup.geometry("420x260")
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+        popup.transient(self.winfo_toplevel())
+        popup.grab_set()
+
+        popup.update_idletasks()
+        x = self.winfo_rootx() + max((self.winfo_width() - 420) // 2, 0)
+        y = self.winfo_rooty() + max((self.winfo_height() - 260) // 2, 0)
+        popup.geometry(f"420x260+{x}+{y}")
+
+        ctk.CTkLabel(
+            popup,
+            text="Período do relatório",
+            font=("Arial", 16, "bold"),
+            text_color="#3b8ed0",
+        ).pack(pady=(16, 6))
+
+        ctk.CTkLabel(
+            popup,
+            text=(
+                "Informe as datas de registro no painel.\n"
+                "Será enviado um e-mail para o suporte com os relatórios em anexo."
+            ),
+            justify="center",
+            font=("Arial", 11),
+        ).pack(pady=(0, 12))
+
+        frame_campos = ctk.CTkFrame(popup, fg_color="transparent")
+        frame_campos.pack(pady=4, padx=20, fill="x")
+
+        ctk.CTkLabel(frame_campos, text="Data inicial:").grid(
+            row=0, column=0, padx=(0, 8), pady=6, sticky="w",
+        )
+        entry_ini = ctk.CTkEntry(
+            frame_campos, width=180, placeholder_text="DD/MM/AAAA",
+        )
+        entry_ini.grid(row=0, column=1, pady=6, sticky="w")
+        entry_ini.bind("<KeyRelease>", self._formatar_data_teclado)
+
+        ctk.CTkLabel(frame_campos, text="Data final:").grid(
+            row=1, column=0, padx=(0, 8), pady=6, sticky="w",
+        )
+        entry_fim = ctk.CTkEntry(
+            frame_campos, width=180, placeholder_text="DD/MM/AAAA",
+        )
+        entry_fim.grid(row=1, column=1, pady=6, sticky="w")
+        entry_fim.bind("<KeyRelease>", self._formatar_data_teclado)
+
+        frame_btn = ctk.CTkFrame(popup, fg_color="transparent")
+        frame_btn.pack(pady=16, padx=20, fill="x")
+        frame_btn.grid_columnconfigure((0, 1), weight=1)
+
+        def confirmar():
+            dt_ini = entry_ini.get().strip()
+            dt_fim = entry_fim.get().strip()
+            if len(dt_ini) != 10 or len(dt_fim) != 10:
+                messagebox.showwarning(
+                    "Datas inválidas",
+                    "Informe data inicial e final completas no formato DD/MM/AAAA.",
+                    parent=popup,
+                )
+                return
+            try:
+                log_service.periodo_suporte(dt_ini, dt_fim)
+            except ValueError as exc:
+                messagebox.showwarning("Datas inválidas", str(exc), parent=popup)
+                return
+
+            popup.grab_release()
+            popup.destroy()
+
+            self.lbl_status.configure(
+                text="Status: enviando log para suporte...",
+                text_color="#3b8ed0",
+            )
+            self.update_idletasks()
+
+            try:
+                resultado = enviar_log_suporte_por_email(dt_ini, dt_fim)
+            except Exception as exc:
+                messagebox.showerror(
+                    "Erro ao enviar e-mail",
+                    f"Não foi possível enviar o log para o suporte:\n{exc}",
+                )
+                self.lbl_status.configure(
+                    text="Status: falha ao enviar log para suporte.",
+                    text_color="#c62828",
+                )
+                return
+
+            messagebox.showinfo(
+                "E-mail enviado",
+                (
+                    f"Assunto: {resultado['assunto']}\n"
+                    f"Para: {resultado['destinatario']}\n"
+                    f"De: {resultado['remetente']}\n\n"
+                    f"Período: {dt_ini} 00:00 até {dt_fim} 23:59\n"
+                    f"Logs: {resultado['qtd_logs']} registro(s)\n"
+                    f"NFes: {resultado['qtd_notas']} nota(s)"
+                ),
+            )
+            self.lbl_status.configure(
+                text=(
+                    f"Status: log enviado ao suporte "
+                    f"({resultado['qtd_logs']} logs, {resultado['qtd_notas']} notas)."
+                ),
+                text_color="#3b8ed0",
+            )
+
+        def cancelar():
+            popup.grab_release()
+            popup.destroy()
+
+        ctk.CTkButton(
+            frame_btn, text="Confirmar", fg_color="green",
+            hover_color="darkgreen", command=confirmar,
+        ).grid(row=0, column=0, padx=6, sticky="ew")
+        ctk.CTkButton(
+            frame_btn, text="Cancelar", fg_color="gray",
+            hover_color="#5f5f5f", command=cancelar,
+        ).grid(row=0, column=1, padx=6, sticky="ew")
+
+        popup.protocol("WM_DELETE_WINDOW", cancelar)
+        entry_ini.focus_set()
 
     def _obter_limite(self):
         valor = self.combo_limite.get().strip()

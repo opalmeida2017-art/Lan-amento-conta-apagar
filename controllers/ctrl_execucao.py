@@ -25,6 +25,26 @@ class ExecucaoController:
             db.atualizar_arquiva_nota(chave_da_nota, estado_banco)
         except Exception as e:
             print(f"[ERRO BANCO DE DADOS] Falha ao atualizar arquiva: {e}")
+
+    def atualizar_painel_placa(self, chave_da_nota, num_nota, placa):
+        ok, msg = db.atualizar_painel_placa_km(
+            chave_nfe=chave_da_nota,
+            num_nota=num_nota,
+            placa=placa,
+        )
+        if not ok and msg:
+            raise ValueError(msg)
+        return ok
+
+    def atualizar_painel_km(self, chave_da_nota, num_nota, km):
+        ok, msg = db.atualizar_painel_placa_km(
+            chave_nfe=chave_da_nota,
+            num_nota=num_nota,
+            km=km,
+        )
+        if not ok and msg:
+            raise ValueError(msg)
+        return ok
         
     def iniciar_robo(self):
         self.app_controller.iniciar_robo()

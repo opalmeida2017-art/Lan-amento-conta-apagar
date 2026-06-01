@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import os
 import sys
@@ -120,6 +121,12 @@ def inicializar_banco():
         cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN hoje_apenas INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    try:
+        cursor.execute(
+            "ALTER TABLE filtros_salvos ADD COLUMN fornecedores_fatura_afaturar TEXT DEFAULT ''",
+        )
+    except sqlite3.OperationalError:
+        pass
 
     # TABELA COM A COLUNA NOVA DE OBSERVAÇÃO
     cursor.execute('''CREATE TABLE IF NOT EXISTS notas_raspadas (
@@ -147,6 +154,15 @@ def inicializar_banco():
 
     try: cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN nfe_arquiva TEXT DEFAULT '☐'")
     except sqlite3.OperationalError: pass
+
+    try:
+        cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN painel_placa TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE notas_raspadas ADD COLUMN painel_km TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     
     # Criação da tabela oficial da Frota
     cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
@@ -534,6 +550,7 @@ def salvar_filtros(
     cod_unidade_embarque='',
     ultimos_30_dias=False,
     hoje_apenas=False,
+    fornecedores_fatura_afaturar='',
 ):
     conn = conectar_banco()
     cursor = conn.cursor()
@@ -554,6 +571,7 @@ def salvar_filtros(
             "ALTER TABLE filtros_salvos ADD COLUMN cod_unidade_embarque TEXT DEFAULT ''",
             "ALTER TABLE filtros_salvos ADD COLUMN ultimos_30_dias INTEGER DEFAULT 0",
             "ALTER TABLE filtros_salvos ADD COLUMN hoje_apenas INTEGER DEFAULT 0",
+            "ALTER TABLE filtros_salvos ADD COLUMN fornecedores_fatura_afaturar TEXT DEFAULT ''",
         ):
             try:
                 cursor.execute(sql)
@@ -569,20 +587,22 @@ def salvar_filtros(
             str(cod_unidade_embarque or '').strip(),
             int(bool(ultimos_30_dias)),
             int(bool(hoje_apenas)),
+            str(fornecedores_fatura_afaturar or '').strip(),
         )
         if row:
             cursor.execute(
                 '''UPDATE filtros_salvos
                    SET mes=?, ano=?, cod_filial=?, cod_unidade_embarque=?,
-                       ultimos_30_dias=?, hoje_apenas=?
+                       ultimos_30_dias=?, hoje_apenas=?, fornecedores_fatura_afaturar=?
                    WHERE id=?''',
                 valores + (row[0],),
             )
         else:
             cursor.execute(
                 '''INSERT INTO filtros_salvos
-                   (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias, hoje_apenas)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
+                   (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias,
+                    hoje_apenas, fornecedores_fatura_afaturar)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
                 valores,
             )
         conn.commit()
@@ -598,7 +618,8 @@ def carregar_filtros():
         conn = conectar_banco()
         cursor = conn.cursor()
         cursor.execute(
-            '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias, hoje_apenas
+            '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias,
+                      hoje_apenas, fornecedores_fatura_afaturar
                FROM filtros_salvos ORDER BY id DESC LIMIT 1''',
         )
         resultado = cursor.fetchone()
@@ -611,6 +632,7 @@ def carregar_filtros():
                 'cod_unidade_embarque': resultado[3] or '',
                 'ultimos_30_dias': bool(resultado[4]) if len(resultado) > 4 else False,
                 'hoje_apenas': bool(resultado[5]) if len(resultado) > 5 else False,
+                'fornecedores_fatura_afaturar': (resultado[6] or '') if len(resultado) > 6 else '',
             }
         return None
     except Exception:
@@ -873,6 +895,97 @@ def salvar_modelos_placa(modelos_str):
 def obter_modelos_placa_string():
     modelos = obter_modelos_placa() 
     return ", ".join(modelos)
+
+
+def validar_modelo_placa(modelo):
+    """Valida máscara de placa: A = letra, 1 = número (texto inicial exato na NFe)."""
+    texto = str(modelo or '').strip()
+    if not texto:
+        return False, 'Informe ao menos um modelo de placa.'
+    match = re.search(r'([A1][A1\-\s]{5,}[A1])', texto)
+    if not match:
+        return False, (
+            f"Formato inválido: '{texto}'\n\n"
+            'Use A para letras e 1 para números na placa.\n'
+            'O texto antes da placa deve ser igual ao da observação da NFe.\n'
+            'Exemplo: Placa : AAA-1A11'
+        )
+    mascara = match.group(1)
+    if re.search(r'[02-9]', mascara):
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Na máscara da placa use apenas A (letra) e 1 (número).\n'
+            'Não use dígitos reais (0, 2, 3...).'
+        )
+    if re.search(r'[a-z]', mascara):
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Use A maiúsculo para representar letras na máscara.'
+        )
+    if re.search(r'[^A1\-\s]', mascara):
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Na máscara só são permitidos A, 1, hífen e espaço.'
+        )
+    return True, ''
+
+
+def validar_modelo_km(modelo):
+    """Valida máscara de KM: 1 = dígito; ponto/vírgula mantêm o formato."""
+    texto = str(modelo or '').strip()
+    if not texto:
+        return False, 'Informe ao menos um modelo de KM.'
+    if '1' not in texto:
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Substitua os dígitos do KM por 1.\n'
+            'O texto inicial deve ser igual ao da observação da NFe.\n'
+            'Exemplo: odometro : 111.111,11'
+        )
+    idx = texto.find('1')
+    prefixo = texto[:idx]
+    template = texto[idx:]
+    if not prefixo.strip():
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Informe o texto que aparece antes do KM na NFe.\n'
+            'Exemplo: odometro : 111.111,11'
+        )
+    if re.search(r'[^1\s.,]', template):
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Depois do texto inicial use apenas 1, ponto (.) e vírgula (,).\n'
+            'Exemplo: odometro : 111.111,11'
+        )
+    if re.search(r'[02-9A-Za-z]', template):
+        return False, (
+            f"Modelo inválido: '{texto}'\n\n"
+            'Use somente o caractere 1 no lugar dos dígitos do KM.'
+        )
+    return True, ''
+
+
+def validar_lista_modelos_placa(modelos_str):
+    modelos = [m.strip() for m in str(modelos_str or '').split(',') if m.strip()]
+    if not modelos:
+        return True, '', modelos
+    for modelo in modelos:
+        ok, msg = validar_modelo_placa(modelo)
+        if not ok:
+            return False, msg, modelos
+    return True, '', modelos
+
+
+def validar_lista_modelos_km(modelos_str):
+    modelos = [m.strip() for m in str(modelos_str or '').split(',') if m.strip()]
+    if not modelos:
+        return True, '', modelos
+    for modelo in modelos:
+        ok, msg = validar_modelo_km(modelo)
+        if not ok:
+            return False, msg, modelos
+    return True, '', modelos
+
 # =======================================================
 # FUNÇÕES PARA CONFIGURAÇÃO DOS MODELOS DE KM
 # =======================================================
@@ -887,7 +1000,7 @@ def criar_tabela_config_km():
     ''')
     c.execute('SELECT count(*) FROM config_km')
     if c.fetchone()[0] == 0:
-        padroes = ["KM: 1", "KM 1", "HIDROMETRO: 1", "ODO: 1"]
+        padroes = ["KM: 1", "KM 1", "ODOMETRO : 1", "ODOMETRO: 1", "HIDROMETRO: 1", "ODO: 1"]
         for p in padroes:
             c.execute('INSERT INTO config_km (modelo) VALUES (?)', (p,))
     conn.commit()
@@ -1329,6 +1442,129 @@ def carregar_codigo_grupo_item_padrao():
     cfg = carregar_codigos_relatorios()
     return str(cfg.get('cod_grupo_item') or '').strip()
 
+
+def normalizar_placa_painel(texto):
+    """Placa no painel: somente letras e números (sem ponto, espaço ou traço)."""
+    return re.sub(r'[^A-Za-z0-9]', '', str(texto or '')).upper()
+
+
+def normalizar_km_painel(texto):
+    """KM no painel: somente dígitos."""
+    return re.sub(r'\D', '', str(texto or ''))
+
+
+def validar_placa_painel(texto):
+    placa = normalizar_placa_painel(texto)
+    if not placa:
+        return True, ''
+    if len(placa) < 7 or len(placa) > 8:
+        return False, (
+            'Placa inválida: use 7 ou 8 caracteres, apenas letras e números '
+            '(sem ponto, espaço ou traço).'
+        )
+    return True, placa
+
+
+def validar_km_painel(texto):
+    km = normalizar_km_painel(texto)
+    if not km:
+        return True, ''
+    return True, km
+
+
+def obter_painel_placa_km(chave_nfe='', num_nota=''):
+    chave = str(chave_nfe or '').strip()
+    num = str(num_nota or '').strip()
+    if not chave and not num:
+        return {'painel_placa': '', 'painel_km': ''}
+    try:
+        conn = conectar_banco()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        if chave:
+            c.execute(
+                'SELECT painel_placa, painel_km FROM notas_raspadas WHERE chave_nfe = ?',
+                (chave,),
+            )
+        else:
+            c.execute(
+                '''SELECT painel_placa, painel_km FROM notas_raspadas
+                   WHERE num_nota = ? ORDER BY id DESC LIMIT 1''',
+                (num,),
+            )
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return {'painel_placa': '', 'painel_km': ''}
+        return {
+            'painel_placa': normalizar_placa_painel(row['painel_placa']),
+            'painel_km': normalizar_km_painel(row['painel_km']),
+        }
+    except Exception as e:
+        print(f'Erro ao ler placa/KM do painel: {e}')
+        return {'painel_placa': '', 'painel_km': ''}
+
+
+def atualizar_painel_placa_km(chave_nfe='', num_nota='', placa=None, km=None):
+    chave = str(chave_nfe or '').strip()
+    num = str(num_nota or '').strip()
+    if not chave and not num:
+        return False, 'Chave ou número da nota não informado.'
+
+    placa_norm = normalizar_placa_painel(placa) if placa is not None else None
+    km_norm = normalizar_km_painel(km) if km is not None else None
+
+    if placa_norm is not None and placa_norm:
+        ok, msg = validar_placa_painel(placa_norm)
+        if not ok:
+            return False, msg
+    if km_norm is not None and km_norm:
+        ok, msg = validar_km_painel(km_norm)
+        if not ok:
+            return False, msg
+
+    try:
+        conn = conectar_banco()
+        c = conn.cursor()
+        if chave:
+            filtro = 'chave_nfe = ?'
+            filtro_val = chave
+        else:
+            filtro = (
+                'id = (SELECT id FROM notas_raspadas WHERE num_nota = ? '
+                'ORDER BY id DESC LIMIT 1)'
+            )
+            filtro_val = num
+
+        if placa_norm is not None and km_norm is not None:
+            c.execute(
+                f'UPDATE notas_raspadas SET painel_placa = ?, painel_km = ? WHERE {filtro}',
+                (placa_norm, km_norm, filtro_val),
+            )
+        elif placa_norm is not None:
+            c.execute(
+                f'UPDATE notas_raspadas SET painel_placa = ? WHERE {filtro}',
+                (placa_norm, filtro_val),
+            )
+        elif km_norm is not None:
+            c.execute(
+                f'UPDATE notas_raspadas SET painel_km = ? WHERE {filtro}',
+                (km_norm, filtro_val),
+            )
+        else:
+            conn.close()
+            return False, 'Nenhum valor para atualizar.'
+
+        alterou = c.rowcount > 0
+        conn.commit()
+        conn.close()
+        if alterou:
+            _notificar_painel_notas_alterado()
+        return alterou, ''
+    except Exception as e:
+        return False, str(e)
+
+
 def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota="", limite=None):
     """Busca todas as notas e usa um atalho seguro: se não houver filtro, mostra tudo!"""
     import sqlite3
@@ -1415,3 +1651,45 @@ def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""
     except Exception as e:
         print(f"Erro ao buscar/filtrar notas: {e}")
         return []
+
+
+def _parse_data_insercao(valor):
+    from datetime import datetime
+
+    texto = str(valor or '').strip()
+    if not texto:
+        return None
+    candidatos = (
+        ('%Y-%m-%d %H:%M:%S', texto[:19]),
+        ('%d/%m/%Y %H:%M:%S', texto[:19]),
+        ('%Y-%m-%d', texto[:10]),
+        ('%d/%m/%Y', texto[:10]),
+    )
+    for formato, trecho in candidatos:
+        try:
+            return datetime.strptime(trecho, formato)
+        except ValueError:
+            continue
+    return None
+
+
+def listar_notas_por_data_insercao(dt_ini="", dt_fim=""):
+    """Notas registradas no painel entre 00:00 da data inicial e 23:59 da final."""
+    import log_service
+
+    inicio, fim = log_service.periodo_suporte(dt_ini, dt_fim)
+    conn = conectar_banco()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM notas_raspadas ORDER BY data_insercao DESC, id DESC")
+    todas = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    filtradas = []
+    for nota in todas:
+        dt_registro = _parse_data_insercao(nota.get('data_insercao'))
+        if not dt_registro:
+            continue
+        if inicio <= dt_registro <= fim:
+            filtradas.append(nota)
+    return filtradas, inicio, fim

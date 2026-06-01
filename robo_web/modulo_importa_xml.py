@@ -95,14 +95,10 @@ def _primeiro_locator_disponivel(candidatos):
 
 
 def _fazer_login(page, config, log):
+    from robo_web.utils import fazer_login_erp
+
     log("🔐 Fazendo login no ERP para importação manual de XML...")
-    page.goto(config["link"], timeout=60000)
-    page.locator('input[type="text"]').first.fill(config["user_sis"])
-    page.locator('input[type="password"]').first.fill(config["senha_sis"])
-    page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click(force=True)
-    page.wait_for_load_state("load", timeout=30000)
-    time.sleep(2)
-    verificar_pagina_erp_ok(page, log)
+    fazer_login_erp(page, config, log=log)
 
 
 def _abrir_painel_nfe(page, log):

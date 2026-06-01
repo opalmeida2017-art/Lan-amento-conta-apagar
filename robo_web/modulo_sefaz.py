@@ -2,16 +2,83 @@ import time
 import calendar
 from datetime import datetime, timedelta
 
-from .utils import ErroServidorIndisponivel, verificar_pagina_erp_ok
+from .utils import ErroServidorIndisponivel, fazer_login_erp, verificar_pagina_erp_ok
 
 TIMEOUT_SUCESSO_CONSULTA_MS = 60000
 MAX_TENTATIVAS_CONSULTA = 3
+MONITOR_CONSULTA_SEL = 'span[id="formCad:msgEMonitor1"]'
 
 # Mapa de meses para conversão de texto para número
 MAPA_MESES = {
     "Jan": 1, "Fev": 2, "Mar": 3, "Abr": 4, "Mai": 5, "Jun": 6,
     "Jul": 7, "Ago": 8, "Set": 9, "Out": 10, "Nov": 11, "Dez": 12
 }
+
+
+def _texto_acao_inexistente(texto):
+    tl = (texto or '').lower()
+    return 'ação inexistente' in tl or 'acao inexistente' in tl
+
+
+def _texto_sucesso_consulta(texto):
+    tl = (texto or '').lower()
+    return 'sucesso' in tl or 'conclu' in tl
+
+
+def _aguardar_mensagem_consulta_nfe(page, log, timeout_seg=60):
+    """
+    Monitora span#formCad:msgEMonitor1 após clicar em Consultar.
+    Retorna ('sucesso'|'acao_inexistente'|'erro'|'timeout', mensagem).
+    """
+    msg_span = page.locator(MONITOR_CONSULTA_SEL)
+    inicio = time.time()
+    ultimo_log = ''
+
+    while time.time() - inicio < timeout_seg:
+        verificar_pagina_erp_ok(page, log)
+
+        try:
+            sucesso_loc = page.locator('text=/sucesso/i').first
+            if sucesso_loc.is_visible(timeout=300):
+                texto = (sucesso_loc.text_content() or '').strip()
+                if texto and _texto_sucesso_consulta(texto):
+                    if texto != ultimo_log:
+                        log(f'   -> Retorno consulta SEFAZ: {texto}')
+                    return 'sucesso', texto
+        except Exception:
+            pass
+
+        texto = ''
+        try:
+            if msg_span.is_visible(timeout=500):
+                texto = (msg_span.text_content() or '').strip()
+        except Exception:
+            pass
+
+        if texto:
+            if texto != ultimo_log:
+                log(f'   -> Retorno consulta SEFAZ: {texto}')
+                ultimo_log = texto
+
+            if _texto_sucesso_consulta(texto):
+                return 'sucesso', texto
+
+            if _texto_acao_inexistente(texto):
+                log(
+                    "   ℹ️ ERP retornou 'Ação Inexistente' após consulta — "
+                    'seguindo com o fluxo.'
+                )
+                return 'acao_inexistente', texto
+
+            tl = texto.lower()
+            if 'erro grave' in tl or (
+                'erro' in tl and 'aguarde' not in tl and 'iniciando consulta' not in tl
+            ):
+                return 'erro', texto
+
+        time.sleep(0.75)
+
+    return 'timeout', ultimo_log
 
 
 def _preencher_filtros_consulta(page, data_ini, data_fim):
@@ -31,14 +98,44 @@ def _executar_consulta_periodo(page, log, data_ini, data_fim, nome_empresa, desc
         verificar_pagina_erp_ok(page, log)
 
         try:
-            page.locator("text=/sucesso/i").first.wait_for(
-                state="visible",
-                timeout=TIMEOUT_SUCESSO_CONSULTA_MS,
+            resultado, mensagem = _aguardar_mensagem_consulta_nfe(
+                page,
+                log,
+                timeout_seg=TIMEOUT_SUCESSO_CONSULTA_MS // 1000,
             )
             verificar_pagina_erp_ok(page, log)
-            log(f"Sucesso na consulta de {descricao_periodo}!")
-            time.sleep(1)
-            return True
+
+            if resultado == 'sucesso':
+                log(f"Sucesso na consulta de {descricao_periodo}!")
+                time.sleep(1)
+                return True
+
+            if resultado == 'acao_inexistente':
+                log(f"Consulta de {descricao_periodo} — continuando após 'Ação Inexistente'.")
+                time.sleep(1)
+                return True
+
+            if resultado == 'timeout' and tentativa < MAX_TENTATIVAS_CONSULTA:
+                log(
+                    f"⚠️ Consulta sem confirmação em "
+                    f"{TIMEOUT_SUCESSO_CONSULTA_MS // 1000}s "
+                    f"(última msg: {mensagem or '—'}). "
+                    f"Reiniciando consulta ({tentativa}/{MAX_TENTATIVAS_CONSULTA})..."
+                )
+                time.sleep(2)
+                continue
+
+            if resultado == 'erro':
+                raise RuntimeError(
+                    f"Erro na consulta SEFAZ de {descricao_periodo}: {mensagem}"
+                )
+
+            raise RuntimeError(
+                f"Consulta SEFAZ de {descricao_periodo} expirou sem resposta "
+                f"(última msg: {mensagem or '—'})"
+            )
+        except RuntimeError:
+            raise
         except Exception as e:
             verificar_pagina_erp_ok(page, log)
             msg = str(e)
@@ -65,20 +162,9 @@ def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False, hoje_
     """
     try:
         log("Acessando o sistema para consulta SEFAZ...")
-        page.goto(config['link'])
-        page.wait_for_load_state("networkidle")
-        verificar_pagina_erp_ok(page, log)
+        fazer_login_erp(page, config, log=log)
 
-        # 1. LOGIN
-        log("Realizando login no sistema...")
-        page.locator('input[type="text"]').fill(config['user_sis'])
-        page.locator('input[type="password"]').fill(config['senha_sis'])
-        page.locator('input[value="Entrar"], button:has-text("Entrar")').click()
-
-        time.sleep(3)
-        verificar_pagina_erp_ok(page, log)
-
-        # 2. NAVEGAÇÃO AO PAINEL DE NFE
+        # NAVEGAÇÃO AO PAINEL DE NFE
         log("Navegando até o Painel de NFe (Notas Destinadas)...")
         page.locator("text='Painéis' >> visible=true").first.hover()
         time.sleep(1)

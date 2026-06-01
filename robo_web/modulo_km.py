@@ -1,74 +1,94 @@
 import re
 import time
+
 import database_setup as db
+from robo_web.utils import converter_modelo_km_para_regex, limpar_km_extraido
 
-def processar_km(page, log, idx, memoria_obs):
-    log(f"   -> Verificando KM para o Item {idx + 1}...")
-    
-    # 1. LOCALIZA O CAMPO DE KM NA TELA
-    # Usamos name^= (que começa com) para driblar a mudança do j_idt143 e size="10"
-    campo_km = page.locator(f'input[name^="formCad:tableItemNota:{idx}:j_idt"][size="10"]')
-    
-    # Backup: caso o seletor flexível falhe, tenta o exato que você mapeou
-    if campo_km.count() == 0:
-        campo_km = page.locator(f'input[name="formCad:tableItemNota:{idx}:j_idt143"]')
 
-    if campo_km.count() == 0 or not campo_km.first.is_visible():
-        log("   ⚠️ Campo de KM não encontrado na tela.")
-        return False
-
-    # Verifica se já está preenchido pelo sistema (diferente de 0 ou vazio)
-    valor_atual = campo_km.first.input_value().strip()
-    if valor_atual and valor_atual != "0":
-        log(f"   -> KM já veio preenchido na tela: {valor_atual}")
-        return True
-
-    # 2. CARREGA OS MODELOS DO SEU FILTRO NO BANCO DE DADOS
+def _carregar_modelos_km():
     try:
         km_string = db.obter_modelos_km_string()
         if km_string:
-            modelos_km = [m.strip().upper() for m in km_string.split(',') if m.strip()]
-        else:
-            modelos_km = ["KM 1", "KM: 1", "ODOMETRO 1", "ODO: 1", "ODO 1"] # Backup
-    except:
-        modelos_km = ["KM 1", "KM: 1", "ODOMETRO 1", "ODO: 1", "ODO 1"]
+            modelos = [m.strip() for m in km_string.split(',') if m.strip()]
+            if modelos:
+                return modelos
+    except Exception:
+        pass
+    return []
 
-    # 3. MÁGICA DA EXTRAÇÃO (Transforma o "1" na busca do número exato)
-    km_encontrado = None
-    obs_upper = memoria_obs.upper()
-    
-    for modelo in modelos_km:
-        if "1" not in modelo:
-            continue # Pula se o modelo estiver configurado errado
 
-        # Transforma o "ODO: 1" em uma RegEx poderosa -> r"ODO:\s*([\d\.,]+)"
-        partes = modelo.split("1")
-        prefixo = re.escape(partes[0].strip()).replace(r"\ ", r"\s*")
-        sufixo = re.escape(partes[1].strip()).replace(r"\ ", r"\s*") if len(partes) > 1 else ""
-        
-        # Padrão: Prefixo + (Qualquer número, ponto ou vírgula) + Sufixo
-        padrao = rf"{prefixo}\s*([\d\.,]+)\s*{sufixo}"
-        
-        match = re.search(padrao, obs_upper)
+def extrair_km_da_observacao(memoria_obs, log=None):
+    obs = str(memoria_obs or '')
+    if not obs.strip():
+        if log:
+            log('   ⚠️ Observação da nota vazia no ERP — impossível extrair KM.')
+        return None, None
+
+    modelos = _carregar_modelos_km()
+    if not modelos:
+        if log:
+            log('   ⚠️ Nenhum modelo de KM configurado em Parâmetros ERP.')
+        return None, None
+
+    for modelo in modelos:
+        padrao = converter_modelo_km_para_regex(modelo)
+        if not padrao:
+            continue
+        match = re.search(padrao, obs)
         if match:
-            km_bruto = match.group(1)
-            
-            # Limpa formatação brasileira (Ex: "442.816,00" -> "442816")
-            # Remove os pontos e pega só o que vem antes da vírgula
-            km_limpo = km_bruto.replace(".", "").split(",")[0]
-            km_encontrado = km_limpo
-            
-            log(f"   -> 🛣️ KM extraído da observação usando a máscara '{modelo}': {km_encontrado}")
-            break
+            km = limpar_km_extraido(match.group(1))
+            if km:
+                return km, f"máscara '{modelo}'"
 
-    # 4. PREENCHE O CAMPO DE KM SE ENCONTRADO
+    if log:
+        log(
+            '   ⚠️ KM não encontrado: o texto da observação não corresponde '
+            f'ao modelo configurado. Modelos: {modelos}'
+        )
+    return None, None
+
+
+def processar_km(page, log, idx, memoria_obs, km_painel=None):
+    log(f'   -> Verificando KM para o Item {idx + 1}...')
+
+    campo_km = page.locator(
+        f'input[name^="formCad:tableItemNota:{idx}:j_idt"][size="10"]'
+    )
+    if campo_km.count() == 0:
+        campo_km = page.locator(
+            f'input[name="formCad:tableItemNota:{idx}:j_idt143"]'
+        )
+
+    if campo_km.count() == 0 or not campo_km.first.is_visible():
+        log('   ⚠️ Campo de KM não encontrado na tela.')
+        return False
+
+    km_painel = re.sub(r'\D', '', str(km_painel or ''))
+    if km_painel:
+        log(f'   -> KM informado no painel do robô: {km_painel}')
+        campo_km.first.click()
+        campo_km.first.clear()
+        campo_km.first.fill(km_painel)
+        campo_km.first.press('Tab')
+        time.sleep(1)
+        return True
+
+    valor_atual = campo_km.first.input_value().strip()
+    if valor_atual and valor_atual != '0':
+        log(
+            f'   -> KM já preenchido pelo ERP ao validar o veículo: {valor_atual} '
+            '(não usa a observação)'
+        )
+        return True
+
+    km_encontrado, origem = extrair_km_da_observacao(memoria_obs, log=log)
     if km_encontrado:
+        log(f'   -> 🛣️ KM extraído da observação via {origem}: {km_encontrado}')
         campo_km.first.click()
         campo_km.first.clear()
         campo_km.first.fill(km_encontrado)
-        campo_km.first.press("Tab") # Dispara o gatilho do JSF
+        campo_km.first.press('Tab')
         time.sleep(1)
         return True
-    else:
-        log("   ⚠️ Nenhum KM encontrado nas observações usando os filtros atuais.")
-        return False
+
+    return False

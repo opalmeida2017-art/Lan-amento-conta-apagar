@@ -4,9 +4,14 @@ import database_setup as db
 from robo_web.controle_robo import RoboParadoPeloUsuario, consumir_parada_apos_nota
 from robo_web.utils import (
     abortar_nota_com_erro,
+    codigo_negocio_por_vinculo,
     ErroServidorIndisponivel,
+    nome_negocio_erp,
+    normalizar_vinculo_veiculo,
     obter_mensagem_erro_erp,
+    unificar_codigo_negocio_nota,
     verificar_pagina_erp_ok,
+    vinculo_veiculo_exige_desmarcar_despesa,
     voltar_ao_painel_nfe,
 )
 from robo_web.modulo_veiculo import processar_veiculo, _placa_para_mensagem_erro
@@ -161,10 +166,75 @@ def _texto_status_linha(linha):
     return (_ler_dado_linha(linha, 'td.rf-edt-td-status') or '').strip()
 
 
-def _linha_tem_link_importar(linha):
-    """Link/botão Importar na linha (status pode continuar 'Sem XML')."""
+def _status_eh_abrir_cp(status_texto):
+    """Nota já importada no ERP — coluna status exibe link/texto Abrir CP."""
+    texto = re.sub(r'\s+', ' ', (status_texto or '').upper().strip())
+    return 'ABRIR' in texto and 'CP' in texto
+
+
+def _linha_tem_link_abrir_cp(linha):
+    """Link JSF 'Abrir CP' na coluna status (nota já importada no ERP)."""
     for sel in (
-        'td.rf-edt-td-status a',
+        'td.rf-edt-td-status a:has-text("Abrir CP")',
+        'a:has-text("Abrir CP")',
+    ):
+        loc = linha.locator(sel)
+        if loc.count() > 0:
+            try:
+                if loc.first.is_visible(timeout=800):
+                    return True
+            except Exception:
+                return True
+    try:
+        if linha.get_by_role('link', name=re.compile(r'^Abrir\s*CP$', re.I)).count() > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _linha_status_abrir_cp(linha):
+    if _linha_tem_link_abrir_cp(linha):
+        return True
+    return _status_eh_abrir_cp(_texto_status_linha(linha))
+
+
+def _extrair_codigo_interno_status(linha):
+    """Tenta obter o código interno do texto/link da coluna status (ex.: Abrir CP)."""
+    cel_status = linha.locator('td.rf-edt-td-status')
+    if cel_status.count() == 0:
+        return ''
+    blocos = []
+    try:
+        blocos.append((cel_status.first.inner_text(timeout=2000) or '').strip())
+    except Exception:
+        pass
+    try:
+        blocos.append((cel_status.first.text_content() or '').strip())
+    except Exception:
+        pass
+    for link in cel_status.locator('a').all():
+        try:
+            blocos.append((link.inner_text(timeout=1000) or '').strip())
+            blocos.append((link.get_attribute('title') or '').strip())
+            blocos.append((link.get_attribute('href') or '').strip())
+        except Exception:
+            continue
+    for bloco in blocos:
+        if not bloco:
+            continue
+        match = re.search(r'\b(\d{4,})\b', bloco)
+        if match:
+            return match.group(1)
+    return ''
+
+
+def _linha_tem_link_importar(linha):
+    """Link/botão Importar na linha (não confundir com link Abrir CP)."""
+    if _linha_status_abrir_cp(linha):
+        return False
+    for sel in (
+        'td.rf-edt-td-status a:has-text("Importar")',
         'a:has-text("Importar")',
         'input[value="Importar"]',
         'input[value*="Importar"]',
@@ -172,6 +242,9 @@ def _linha_tem_link_importar(linha):
         loc = linha.locator(sel)
         if loc.count() > 0:
             try:
+                texto = (loc.first.inner_text(timeout=800) or '').strip().upper()
+                if 'ABRIR' in texto and 'CP' in texto:
+                    continue
                 if loc.first.is_visible(timeout=800):
                     return True
             except Exception:
@@ -186,6 +259,8 @@ def _linha_tem_link_importar(linha):
 
 def _linha_pronta_importar(linha):
     """XML disponível: coluna status = Importar ou link Importar na linha."""
+    if _linha_status_abrir_cp(linha):
+        return False
     status_texto = _texto_status_linha(linha).upper().strip()
     if status_texto == 'IMPORTAR' or status_texto.startswith('IMPORTAR'):
         return True
@@ -198,6 +273,8 @@ def _linha_pronta_importar(linha):
 
 def _linha_precisa_download(linha):
     """Próximo passo é baixar XML (mesma regra do fluxo antigo)."""
+    if _linha_status_abrir_cp(linha):
+        return False
     if _linha_pronta_importar(linha):
         return False
     status_texto = _texto_status_linha(linha).upper()
@@ -207,6 +284,8 @@ def _linha_precisa_download(linha):
 
 
 def _classificar_acao_linha(linha):
+    if _linha_status_abrir_cp(linha):
+        return 'marcar_importada'
     if _linha_pronta_importar(linha):
         return 'importar'
     if _linha_precisa_download(linha):
@@ -307,7 +386,7 @@ def _varrer_linhas_painel(page, memoria, log=None):
 
 
 def _log_resumo_painel(itens, total, log, memoria):
-    nums_imp, nums_down, arquivadas, rodada, outras = [], [], [], [], []
+    nums_imp, nums_down, nums_abrir_cp, arquivadas, rodada, outras = [], [], [], [], [], []
     for it in itens:
         n = it['num_nota']
         if it['arquivada']:
@@ -319,6 +398,8 @@ def _log_resumo_painel(itens, total, log, memoria):
             continue
         if it['acao'] == 'importar':
             nums_imp.append(n)
+        elif it['acao'] == 'marcar_importada':
+            nums_abrir_cp.append(n)
         elif it['acao'] == 'download':
             nums_down.append(n)
         else:
@@ -326,7 +407,8 @@ def _log_resumo_painel(itens, total, log, memoria):
 
     log(
         f'📋 Painel ({total} linhas, ordem da tabela): '
-        f'Importar={nums_imp or "—"} | Sem XML={nums_down or "—"} | '
+        f'Importar={nums_imp or "—"} | Abrir CP={nums_abrir_cp or "—"} | '
+        f'Sem XML={nums_down or "—"} | '
         f'Arquivadas={arquivadas or "—"} | Já feitas nesta rodada={rodada or "—"} | '
         f'Outras={outras or "—"}'
     )
@@ -347,6 +429,8 @@ def _montar_dados_nota(linha, num_nota):
         'codigo_interno': '',
         'erro_importacao': '',
         'observacao_nfe': '',
+        'painel_placa': '',
+        'painel_km': '',
     }
 
 
@@ -372,6 +456,8 @@ def _carregar_dados_nota_alvo(num_nota):
         'codigo_interno': '',
         'erro_importacao': '',
         'observacao_nfe': '',
+        'painel_placa': '',
+        'painel_km': '',
     }
 
 
@@ -405,7 +491,11 @@ def _aplicar_estoque_nota_alvo(dados, memoria, log=None):
 
 
 def _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo):
-    encerrada, detalhe = db.nota_encerrada_robo(num_nota=nota_alvo)
+    relancamento_manual = str(memoria.get('nota_alvo') or '').strip() == str(nota_alvo).strip()
+    if relancamento_manual:
+        encerrada, detalhe = False, ''
+    else:
+        encerrada, detalhe = db.nota_encerrada_robo(num_nota=nota_alvo)
     if encerrada:
         log(f'✅ Nota alvo {nota_alvo} já tratada pelo robô ({detalhe}).')
         memoria['proximo_num_nota'] = None
@@ -486,7 +576,7 @@ def _escolher_nota_alvo(page, log, memoria, nota_alvo):
         if it['acao'] == 'ignorar':
             log(
                 f'⚠️ Nota alvo {nota_alvo} localizada no ERP, mas sem ação '
-                f'Importar/Sem XML. Status: {it["status"][:50]}'
+                f'Importar/Abrir CP/Sem XML. Status: {it["status"][:50]}'
             )
             _marcar_nota_processada(memoria, dados, nota_alvo)
             memoria['proximo_num_nota'] = None
@@ -518,6 +608,45 @@ def _escolher_nota_alvo(page, log, memoria, nota_alvo):
 
     _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo)
     return None, None, None, None
+
+
+def _processar_nota_abrir_cp(page, log, linha, num_nota, dados, memoria):
+    """Nota já está no ERP como Conta a Pagar."""
+    dados = dict(dados or {})
+    dados['num_nota'] = str(num_nota or dados.get('num_nota') or '').strip()
+    nota_alvo = str(memoria.get('nota_alvo') or '').strip()
+    if nota_alvo and nota_alvo == dados['num_nota']:
+        log(
+            f'🔄 Nota {dados["num_nota"]} relançada pelo painel (Abrir CP) — '
+            'executando finalização na Conta a Pagar...'
+        )
+        from robo_web.modulo_gravacao import abrir_cp_linha_e_finalizar
+
+        if abrir_cp_linha_e_finalizar(page, log, linha, dados):
+            _marcar_nota_processada(memoria, dados, num_nota)
+            memoria['proximo_num_nota'] = None
+            memoria['proxima_acao'] = None
+            return None
+        dados_erro = dict(_carregar_dados_nota_alvo(dados['num_nota']))
+        db.registrar_erro_nota_painel(
+            dados_erro,
+            f'Falha ao reprocessar a nota {dados["num_nota"]} via Abrir CP.',
+        )
+        return None
+
+    log(
+        f'📋 Nota {dados["num_nota"]} com status Abrir CP '
+        '(já importada no ERP). Registrando como Importada no painel...'
+    )
+    codigo = _extrair_codigo_interno_status(linha)
+    db.salvar_nota_raspada(dados)
+    if codigo:
+        dados['codigo_interno'] = codigo
+        log(f'   -> Código interno identificado: {codigo}')
+    dados['erro_importacao'] = ''
+    db.marcar_nota_importada_painel(dados)
+    log(f'✅ Nota {dados["num_nota"]} marcada como Importada no painel do robô.')
+    return _ir_para_proxima_nota_apos_tratar(page, log, memoria, dados)
 
 
 def _processar_download_nota(page, log, linha, num_nota, dados, memoria):
@@ -567,6 +696,28 @@ def _processar_download_nota(page, log, linha, num_nota, dados, memoria):
         log(f'   ⚠️ Falha no download: {e}')
         _marcar_nota_processada(memoria, dados, num_nota)
         return _seguir_proxima_nota(page, log, memoria)
+
+
+def localizar_link_abrir_cp_linha(linha):
+    """Retorna o locator do link Abrir CP na linha do painel NFe, ou None."""
+    for sel in (
+        'td.rf-edt-td-status a:has-text("Abrir CP")',
+        'a:has-text("Abrir CP")',
+    ):
+        loc = linha.locator(sel)
+        if loc.count() > 0:
+            try:
+                if loc.first.is_visible(timeout=800):
+                    return loc.first
+            except Exception:
+                return loc.first
+    try:
+        link = linha.get_by_role('link', name=re.compile(r'^Abrir\s*CP$', re.I))
+        if link.count() > 0:
+            return link.first
+    except Exception:
+        pass
+    return None
 
 
 def _clicar_importar_linha(linha, log, num_nota):
@@ -688,6 +839,14 @@ def _registrar_erro_download_pular(dados, num_nota, msg, memoria, log):
 def processar_importacao(page, log, memoria=None):
     memoria = _memoria_painel(memoria)
     nota_alvo = str(memoria.get('nota_alvo') or '').strip()
+    if nota_alvo:
+        dados_painel = _carregar_dados_nota_alvo(nota_alvo)
+        status_painel = str(dados_painel.get('status') or '').strip().upper()
+        if status_painel in ('IMPORTADO', 'PROCESSADO', 'ERRO'):
+            dados_painel['status'] = 'Processando'
+            dados_painel['erro_importacao'] = ''
+            db.salvar_nota_raspada(dados_painel)
+            log(f'🔄 Nota {nota_alvo} liberada para novo processamento no painel.')
 
     verificar_pagina_erp_ok(page, log)
     if memoria.get('atualizar_agora', True):
@@ -721,6 +880,9 @@ def processar_importacao(page, log, memoria=None):
         return
 
     verificar_pagina_erp_ok(page, log)
+
+    if acao == 'marcar_importada':
+        return _processar_nota_abrir_cp(page, log, linha, num_nota, dados, memoria)
 
     if acao == 'importar':
         log(f'🚀 Nota {num_nota} — verificando e importando (nota a nota)')
@@ -756,6 +918,36 @@ def processar_importacao(page, log, memoria=None):
     if acao == 'download':
         return _processar_download_nota(page, log, linha, num_nota, dados, memoria)
     
+def _garantir_negocio_todos_itens_nfe(page, log, codigo_negocio, total_itens):
+    """Antes de importar para CP: todos os itens com o mesmo negócio (Frota ou Frete)."""
+    codigo_negocio = str(codigo_negocio or '1').strip()
+    if codigo_negocio not in ('1', '2'):
+        codigo_negocio = '1'
+
+    nome_negocio = nome_negocio_erp(codigo_negocio)
+    log(
+        f'   🔒 Garantindo {nome_negocio} em todos os {total_itens} item(ns) '
+        'antes de importar para Conta a Pagar...'
+    )
+    alterados = 0
+    for idx in range(total_itens):
+        sel_negocio = page.locator(f'select[id="formCad:tableItemNota:{idx}:negocio"]')
+        if sel_negocio.count() == 0:
+            log(f'      -> Item {idx + 1}: campo Negócio não encontrado.')
+            continue
+        try:
+            valor_atual = str(sel_negocio.input_value() or '').strip()
+        except Exception:
+            valor_atual = ''
+        if valor_atual != codigo_negocio:
+            sel_negocio.select_option(value=codigo_negocio)
+            alterados += 1
+            log(f'      -> Item {idx + 1}: negócio ajustado para {codigo_negocio}')
+    if alterados:
+        time.sleep(1.5)
+    return True
+
+
 def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
     """Função que gerencia o fluxo de preenchimento dentro da nota"""
     cod_filial, cod_ue, aplicar_fixo = obter_codigos_para_nota(log)
@@ -777,8 +969,27 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
 
     linhas_item = page.locator('tbody[id="formCad:tableItemNota:tb"] > tr.rf-dt-r')
     total_itens = linhas_item.count()
-    
+    dados['desmarcar_despesa_nota'] = False
+    dados['codigos_negocio_itens'] = []
+
     modelos_usuario = db.obter_modelos_placa() or ["PLACA: AAA-1A11", "PLAC: AAA-1A11"]
+
+    painel_info = db.obter_painel_placa_km(
+        dados.get('chave_nfe'),
+        dados.get('num_nota'),
+    )
+    painel_placa = str(
+        dados.get('painel_placa') or painel_info.get('painel_placa') or ''
+    ).strip()
+    painel_km = str(dados.get('painel_km') or painel_info.get('painel_km') or '').strip()
+    painel_placa = db.normalizar_placa_painel(painel_placa)
+    painel_km = db.normalizar_km_painel(painel_km)
+    dados['painel_placa'] = painel_placa
+    dados['painel_km'] = painel_km
+    if painel_placa or painel_km:
+        log(
+            f'   📋 Painel: placa={painel_placa or "—"} | km={painel_km or "—"}'
+        )
 
     # ==============================================================
     # 0. O ROBÔ PERGUNTA AO BANCO SE A NOTA É PARA O ESTOQUE
@@ -821,7 +1032,8 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
             
             time.sleep(1.5) # Respiro para o ERP processar as mudanças de Select (AJAX)
             
-            dados['codigo_negocio_veiculo'] = "1" # Informa ao Módulo de Gravação que é Frota (não desmarca despesa)
+            dados['codigo_negocio_veiculo'] = "1"
+            dados['codigos_negocio_itens'].append("1")
 
             # 4. Pula direto para o preenchimento do código/nome do item e cadastra
             # Passamos "1" como código de negócio para ele carregar isso corretamente na nova aba (se for preciso cadastrar)
@@ -835,7 +1047,12 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
         # ==============================================================
         # 1. PROCESSA O VEÍCULO E RECUPERA O TEXTO FINAL (ex: RRW0H88-13)
         resultado_veiculo, placas_extraidas = processar_veiculo(
-            page, log, idx, memoria_obs, modelos_usuario,
+            page,
+            log,
+            idx,
+            memoria_obs,
+            modelos_usuario,
+            placa_painel=painel_placa,
         )
         
         if not resultado_veiculo:
@@ -860,20 +1077,33 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
             return False
             
         # 2. INTELIGÊNCIA: DESCOBRE O CÓDIGO E O RAMO DO NEGÓCIO
-        codigo_negocio = "1" # Padrão
-        
+        codigo_negocio = "1"
+
         if "-" in resultado_veiculo:
-            # Pega só o que vem depois do traço (ex: 13)
             cod_veiculo = resultado_veiculo.split("-")[-1].strip()
-            vinculo = db.obter_vinculo_veiculo(cod_veiculo).upper() # Garante que está em maiúsculo
-            
-            # MÁGICA: Procura a palavra com acento OU sem acento!
-            if "PRÓPRIO" in vinculo or "PROPRIO" in vinculo:
-                codigo_negocio = "1"
-                log(f"-> 🧠 Vínculo do veículo ({cod_veiculo}): {vinculo} -> Negócio: FROTA (1)")
+            vinculo = db.obter_vinculo_veiculo(cod_veiculo)
+            codigo_negocio = codigo_negocio_por_vinculo(vinculo)
+            vinculo_norm = normalizar_vinculo_veiculo(vinculo)
+
+            if vinculo_veiculo_exige_desmarcar_despesa(vinculo):
+                dados['desmarcar_despesa_nota'] = True
+                if 'AGREG' in vinculo_norm:
+                    log(
+                        f"-> 🧠 Vínculo ({cod_veiculo}): {vinculo} -> AGREGADO | "
+                        f"Negócio FRETE (2) e Despesa será desmarcada antes de finalizar"
+                    )
+                elif 'TERCEIR' in vinculo_norm:
+                    log(
+                        f"-> 🧠 Vínculo ({cod_veiculo}): {vinculo} -> TERCEIRO | "
+                        f"Negócio FRETE (2) e Despesa será desmarcada antes de finalizar"
+                    )
+                else:
+                    log(
+                        f"-> 🧠 Vínculo ({cod_veiculo}): {vinculo} -> "
+                        f"Negócio FRETE/AGENCIAMENTO (2) | Despesa será desmarcada antes de finalizar"
+                    )
             elif vinculo:
-                codigo_negocio = "2"
-                log(f"-> 🧠 Vínculo do veículo ({cod_veiculo}): {vinculo} -> Negócio: FRETE/AGENCIAMENTO (2)")
+                log(f"-> 🧠 Vínculo do veículo ({cod_veiculo}): {vinculo} -> Negócio: FROTA (1)")
             else:
                 log(f"-> ⚠️ Vínculo do veículo ({cod_veiculo}) não encontrado na frota. Usando FROTA (1).")
 
@@ -883,17 +1113,20 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
             sel_negocio_tela_principal.select_option(value=codigo_negocio)
             log(f"-> 🎯 Formulário validado: Negócio do Item {idx + 1} alterado na tela para a opção {codigo_negocio}")
         
-        dados['codigo_negocio_veiculo'] = codigo_negocio    
+        dados['codigo_negocio_veiculo'] = codigo_negocio
+        dados['codigos_negocio_itens'].append(codigo_negocio)
 
         # 4. KM obrigatório (exceto modo estoque)
-        km_ok = processar_km(page, log, idx, memoria_obs)
+        km_ok = processar_km(page, log, idx, memoria_obs, km_painel=painel_km)
         if not km_ok:
             abortar_nota_com_erro(
                 page,
                 log,
                 dados,
-                f"KM não encontrado nas observações (Item {idx + 1}). "
-                "Ajuste os modelos de KM em Parâmetros ERP ou inclua o KM na observação.",
+                f"KM não encontrado (Item {idx + 1}). "
+                "Preencha a coluna KM no painel ou ajuste o modelo em Parâmetros ERP "
+                "para coincidir exatamente com o texto da observação da NFe "
+                "(maiúsculas, minúsculas e acentos).",
             )
             return False
 
@@ -910,17 +1143,22 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
             return False
 
     # =======================================================================
-    # 6. VALIDAÇÃO DE SEGURANÇA: GARANTE QUE TODOS OS ITENS DE ESTOQUE SEJAM FROTA
+    # 6. NEGÓCIO ÚNICO NA NOTA: TODOS OS ITENS FROTA OU TODOS FRETE/AGENCIAMENTO
     # =======================================================================
     if nota_eh_estoque:
-        log("   📦 Checagem final de segurança: Verificando se todos os itens do Estoque estão como FROTA...")
-        for idx in range(total_itens):
-            sel_negocio = page.locator(f'select[id="formCad:tableItemNota:{idx}:negocio"]')
-            if sel_negocio.count() > 0:
-                if sel_negocio.input_value() != "1":
-                    sel_negocio.select_option(value="1")
-                    log(f"      -> Corrigido o negócio do Item {idx + 1} para FROTA (1).")
-        time.sleep(1)
+        codigo_negocio_nota = '1'
+        dados['desmarcar_despesa_nota'] = False
+    else:
+        codigo_negocio_nota = unificar_codigo_negocio_nota(dados.get('codigos_negocio_itens'))
+        dados['desmarcar_despesa_nota'] = codigo_negocio_nota == '2'
+
+    dados['codigo_negocio_veiculo'] = codigo_negocio_nota
+    log(
+        f'   📌 Negócio unificado da nota: {nome_negocio_erp(codigo_negocio_nota)} '
+        f'(aplicado em todos os itens)'
+    )
+    if total_itens > 0:
+        _garantir_negocio_todos_itens_nfe(page, log, codigo_negocio_nota, total_itens)
 
     # FINALIZA A NOTA
     if not finalizar_gravacao(page, log, dados):
