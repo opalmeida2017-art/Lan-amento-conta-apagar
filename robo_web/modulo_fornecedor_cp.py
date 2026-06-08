@@ -656,3 +656,350 @@ def _remover_parcelas_loop(page, log):
 
     log('   ⚠️ Limite de tentativas ao remover parcelas.')
     return False
+
+
+# --- Validação do nome do fornecedor na importação CP (formCad) ---
+
+_MSG_FORNECEDOR_ALTERADO = re.compile(r'Dados alterados com sucesso', re.I)
+
+
+def carregar_cod_tipo_fornecedor_parametro():
+    dados = db.carregar_filtros() or {}
+    return str(dados.get('cod_tipo_fornecedor', '') or '').strip()
+
+
+def extrair_nome_filtro_fornecedor_imp_cp(valor):
+    """Extrai o nome do fornecedor (texto antes da vírgula) do autocomplete CP."""
+    valor = str(valor or '').strip()
+    if not valor:
+        return ''
+    return valor.split(',')[0].strip()
+
+
+def _normalizar_nome_fornecedor_comparacao(nome):
+    nome = str(nome or '').upper()
+    nome = nome.replace('ª', '')
+    return re.sub(r'[^A-Z0-9]', '', nome)
+
+
+def nomes_fornecedor_equivalentes(nome_erp, nome_xml):
+    """
+    Compara nome exibido no ERP (antes da vírgula) com xNome do XML.
+    Ignora apenas maiúsculas, pontuação e o caractere ª da fonte do ERP.
+    """
+    if not nome_erp or not nome_xml:
+        return True
+    return _normalizar_nome_fornecedor_comparacao(nome_erp) == _normalizar_nome_fornecedor_comparacao(nome_xml)
+
+
+def _localizar_campo_filtro_forn_imp_cp(page):
+    candidatos = (
+        page.locator('input#formCad\\:filtroFornImpCPInput').first,
+        page.locator('input[name="formCad:filtroFornImpCPInput"]').first,
+    )
+    for campo in candidatos:
+        if campo.count() > 0:
+            return campo
+    return candidatos[0]
+
+
+def _localizar_botao_inserir_fornecedor_imp_cp(page):
+    campo = _localizar_campo_filtro_forn_imp_cp(page)
+    if campo.count() > 0:
+        xpaths = (
+            'xpath=ancestor::tr[1]//img[@title="Inserir/Alterar"]',
+            'xpath=ancestor::td[1]//img[@title="Inserir/Alterar"]',
+            'xpath=ancestor::*[contains(@class,"rf-au")][1]//img[@title="Inserir/Alterar"]',
+            'xpath=../..//img[@title="Inserir/Alterar"]',
+            'xpath=following::img[@title="Inserir/Alterar"][1]',
+        )
+        for xpath in xpaths:
+            botao = campo.locator(xpath)
+            if botao.count() > 0:
+                return botao.first
+
+    candidatos = (
+        page.locator('form#formCad img[src*="inserir.gif"][title="Inserir/Alterar"]').first,
+        page.locator('input[id*="filtroFornImpCP"]')
+        .locator('xpath=ancestor::tr[1]//img[@title="Inserir/Alterar"]')
+        .first,
+        page.locator('img[src*="inserir.gif"][title="Inserir/Alterar"]').first,
+        page.locator('img[title="Inserir/Alterar"]').first,
+    )
+    for botao in candidatos:
+        if botao.count() > 0:
+            return botao
+    return candidatos[-1]
+
+
+def ler_xnome_emitente_xml(page, log):
+    """Lê a tag xNome do emitente na aba Arquivo XML da NFe."""
+    from robo_web.modulo_item import _voltar_aba_principal
+
+    try:
+        aba_xml = page.locator('span.rf-tab-lbl', has_text='Arquivo XML da NFe')
+        if not aba_xml.is_visible(timeout=3000):
+            log('   ⚠️ Aba XML não encontrada para validar emitente.')
+            return ''
+        aba_xml.click()
+        time.sleep(1.5)
+
+        xml_texto = page.locator('div, pre, td, span').filter(has_text='nfeProc').last.text_content()
+        bloco_emit = re.search(r'<emit>.*?</emit>', xml_texto or '', re.DOTALL)
+        if bloco_emit:
+            match = re.search(r'<xNome>(.*?)</xNome>', bloco_emit.group(0), re.DOTALL)
+            if match:
+                nome = match.group(1).strip()
+                log(f'   📄 xNome emitente no XML: {nome}')
+                _voltar_aba_principal(page)
+                return nome
+
+        match = re.search(r'<xNome>(.*?)</xNome>', xml_texto or '', re.DOTALL)
+        if match:
+            nome = match.group(1).strip()
+            log(f'   📄 xNome no XML: {nome}')
+            _voltar_aba_principal(page)
+            return nome
+
+        log('   ⚠️ Tag xNome não encontrada no XML.')
+        _voltar_aba_principal(page)
+    except Exception as e:
+        log(f'   ⚠️ Erro ao ler xNome do XML: {e}')
+        try:
+            from robo_web.modulo_item import _voltar_aba_principal
+            _voltar_aba_principal(page)
+        except Exception:
+            pass
+    return ''
+
+
+def _campo_tipo_fornecedor_vazio(campo_tipo):
+    try:
+        return not str(campo_tipo.input_value(timeout=2000) or '').strip()
+    except Exception:
+        return True
+
+
+def _preencher_tipo_fornecedor_autocomplete(aba_forn, cod_tipo, log):
+    """Preenche autocomplete Tipo de Fornecedor (código dos Parâmetros ERP)."""
+    cod_tipo = str(cod_tipo or '').strip()
+    if not cod_tipo:
+        return False
+
+    campo_tipo = aba_forn.locator('input#formforn\\:Forn_tipoFornecedorInput')
+    if campo_tipo.count() == 0:
+        log('   ⚠️ Campo Tipo de Fornecedor não encontrado no cadastro.')
+        return False
+
+    if not _campo_tipo_fornecedor_vazio(campo_tipo):
+        valor_atual = str(campo_tipo.input_value() or '').strip()
+        log(f'   ℹ️ Tipo de fornecedor já preenchido: {valor_atual}')
+        return True
+
+    log(f'   → Digitando tipo de fornecedor: {cod_tipo}')
+    campo_tipo.scroll_into_view_if_needed()
+    campo_tipo = campo_tipo.first
+    campo_tipo.click()
+    time.sleep(0.25)
+    try:
+        campo_tipo.press('Control+A')
+        campo_tipo.press('Backspace')
+    except Exception:
+        campo_tipo.fill('')
+    campo_tipo.press_sequentially(cod_tipo, delay=80)
+    time.sleep(1.2)
+    campo_tipo.press('Enter')
+    time.sleep(1.2)
+    campo_tipo.press('Enter')
+    time.sleep(0.4)
+    campo_tipo.press('Tab')
+    time.sleep(1.5)
+
+    valor_final = str(campo_tipo.input_value() or '').strip()
+    if valor_final:
+        log(f'   ✅ Tipo de fornecedor selecionado: {valor_final}')
+        return True
+
+    sugestoes = (
+        aba_forn.locator('tr.rf-au-opt').first,
+        aba_forn.locator('table.rf-au-lst-scrl tbody tr').first,
+        aba_forn.locator('div.rf-au-lst-scrl tr').first,
+    )
+    for sugestao in sugestoes:
+        try:
+            if sugestao.count() > 0 and sugestao.is_visible(timeout=1500):
+                sugestao.click()
+                time.sleep(1)
+                valor_final = str(campo_tipo.input_value() or '').strip()
+                if valor_final:
+                    log(f'   ✅ Tipo de fornecedor selecionado (lista): {valor_final}')
+                    return True
+        except Exception:
+            continue
+
+    log(
+        f'   ❌ Tipo de fornecedor não confirmado após digitar {cod_tipo}. '
+        'Verifique o código em Parâmetros ERP.'
+    )
+    return False
+
+
+def _ler_erros_gravacao_fornecedor(aba_forn):
+    try:
+        return aba_forn.evaluate(
+            """() => Array.from(document.querySelectorAll('li.fontErrorMessages'))
+                .map(el => (el.textContent || '').trim())
+                .filter(Boolean)""",
+        )
+    except Exception:
+        return []
+
+
+def _aguardar_gravacao_fornecedor(aba_forn, log, timeout_seg=20):
+    """Aguarda sucesso ou erro após gravar fornecedor. Retorna (ok, mensagem_erro)."""
+    inicio = time.time()
+    while time.time() - inicio < timeout_seg:
+        try:
+            textos_info = aba_forn.evaluate(
+                """() => Array.from(document.querySelectorAll('li.fontInfoMessages'))
+                    .map(el => (el.textContent || '').trim())
+                    .filter(Boolean)""",
+            )
+            for texto in textos_info or []:
+                if _MSG_FORNECEDOR_ALTERADO.search(texto):
+                    log(f'   ✅ {texto}')
+                    time.sleep(1)
+                    return True, ''
+        except Exception:
+            pass
+
+        erros = _ler_erros_gravacao_fornecedor(aba_forn)
+        if erros:
+            msg = erros[0]
+            log(f'   ❌ Erro ERP ao gravar fornecedor: {msg}')
+            return False, msg
+
+        time.sleep(0.4)
+
+    erros = _ler_erros_gravacao_fornecedor(aba_forn)
+    if erros:
+        msg = erros[0]
+        log(f'   ❌ Erro ERP ao gravar fornecedor: {msg}')
+        return False, msg
+
+    log('   ⚠️ Mensagem "Dados alterados com sucesso" não apareceu a tempo.')
+    return False, 'Gravação do fornecedor não confirmada pelo ERP.'
+
+
+def _corrigir_cadastro_fornecedor_imp_cp(page, log, nome_xml):
+    cod_tipo = carregar_cod_tipo_fornecedor_parametro()
+    botao_inserir = _localizar_botao_inserir_fornecedor_imp_cp(page)
+    aba_forn = None
+
+    if botao_inserir.count() == 0:
+        msg = 'Botão Inserir/Alterar do fornecedor não encontrado na tela.'
+        log(f'   ❌ {msg}')
+        return False, msg
+
+    log('   → Clicando em Inserir/Alterar do fornecedor...')
+    try:
+        with page.context.expect_page() as nova_aba_info:
+            botao_inserir.click()
+        aba_forn = nova_aba_info.value
+        aba_forn.wait_for_load_state('networkidle')
+    except Exception as e:
+        msg = f'Falha ao abrir cadastro do fornecedor: {e}'
+        log(f'   ❌ {msg}')
+        return False, msg
+
+    try:
+        campo_nome = aba_forn.locator('input#formforn\\:Forn_nome')
+        campo_nome.wait_for(state='visible', timeout=10000)
+        campo_nome.click(click_count=3)
+        campo_nome.fill('')
+        campo_nome.fill(str(nome_xml).upper())
+        log(f'   ✏️ Nome do fornecedor atualizado para: {nome_xml.upper()}')
+
+        campo_tipo = aba_forn.locator('input#formforn\\:Forn_tipoFornecedorInput').first
+        if campo_tipo.count() > 0 and _campo_tipo_fornecedor_vazio(campo_tipo):
+            if not cod_tipo:
+                msg = (
+                    'Tipo de fornecedor vazio — configure '
+                    'Cod. Tipo Fornecedor em Parâmetros ERP.'
+                )
+                log(f'   ❌ {msg}')
+                aba_forn.close()
+                page.bring_to_front()
+                return False, msg
+            if not _preencher_tipo_fornecedor_autocomplete(aba_forn, cod_tipo, log):
+                aba_forn.close()
+                page.bring_to_front()
+                return False, 'Tipo de fornecedor não confirmado no cadastro.'
+
+        log('   → Gravando cadastro do fornecedor...')
+        aba_forn.locator('input#formforn\\:gravarforn').click()
+        try:
+            aba_forn.wait_for_load_state('networkidle', timeout=15000)
+        except Exception:
+            pass
+
+        ok, msg_erro = _aguardar_gravacao_fornecedor(aba_forn, log)
+        aba_forn.close()
+        page.bring_to_front()
+        if not ok:
+            return False, msg_erro
+
+        time.sleep(1)
+        return True, ''
+    except Exception as e:
+        msg = f'Erro ao gravar fornecedor: {e}'
+        log(f'   ❌ {msg}')
+        try:
+            if aba_forn and not aba_forn.is_closed():
+                aba_forn.close()
+        except Exception:
+            pass
+        page.bring_to_front()
+        return False, msg
+
+
+def validar_e_corrigir_nome_fornecedor_imp_cp(page, log):
+    """
+    Após clicar em Importar no painel NFe:
+    compara o fornecedor CP com xNome do XML; corrige cadastro se divergir.
+    Retorna (ok, mensagem_erro).
+    """
+    campo = _localizar_campo_filtro_forn_imp_cp(page)
+    if campo.count() == 0:
+        return True, ''
+
+    try:
+        valor = str(campo.input_value(timeout=3000) or '').strip()
+    except Exception:
+        valor = ''
+
+    if not valor:
+        log(
+            '   ℹ️ Fornecedor CP vazio — seguindo fluxo normal '
+            'sem validar emitente do XML.'
+        )
+        return True, ''
+
+    nome_erp = extrair_nome_filtro_fornecedor_imp_cp(valor)
+    log(f'   🔎 Fornecedor no ERP: {nome_erp}')
+    nome_xml = ler_xnome_emitente_xml(page, log)
+    if not nome_xml:
+        return True, ''
+
+    norm_erp = _normalizar_nome_fornecedor_comparacao(nome_erp)
+    norm_xml = _normalizar_nome_fornecedor_comparacao(nome_xml)
+    if nomes_fornecedor_equivalentes(nome_erp, nome_xml):
+        log(f'   ✅ Nome do fornecedor confere com o XML ({nome_xml}).')
+        return True, ''
+
+    log(
+        f'   ⚠️ Nome ERP ({nome_erp}) difere do XML ({nome_xml}). '
+        f'Normalizado ERP={norm_erp} | XML={norm_xml}. '
+        'Abrindo cadastro para corrigir...'
+    )
+    return _corrigir_cadastro_fornecedor_imp_cp(page, log, nome_xml)

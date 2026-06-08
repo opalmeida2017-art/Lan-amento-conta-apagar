@@ -60,8 +60,9 @@ class AbaFiltros(ctk.CTkFrame):
 
         instrucoes = (
             "⚠️ INSTRUÇÕES PARA EXPORTAÇÃO NO ERP:\n\n"
-            "🚛 VEÍCULOS: As colunas devem conter EXATAMENTE estes nomes originais:\n"
-            " 1º codVeiculo   |   2º placa   |   3º veiculoProprio\n\n"
+            "🚛 VEÍCULOS: As colunas do relatório 117 devem conter estes nomes:\n"
+            " codVeiculo | cavalo | placa | carreta1 | carreta2 | carreta3 | veiculoProprio\n"
+            " (veiculoProprio define Próprio/Agregado/Terceiro na importação NFe)\n\n"
             "📦 ITENS: As colunas devem estar EXATAMENTE nesta ordem e com os nomes originais:\n"
             " 1º codItemD   |   2º descGrupoImp   |   3º descNegocioImp   |   4º descricao\n\n"
             "📦 GRUPO INDEFINIDO (cadastro de item): Cadastre o grupo no ERP em:\n"

@@ -7,11 +7,9 @@ from robo_web.utils import converter_modelo_km_para_regex, limpar_km_extraido
 
 def _carregar_modelos_km():
     try:
-        km_string = db.obter_modelos_km_string()
-        if km_string:
-            modelos = [m.strip() for m in km_string.split(',') if m.strip()]
-            if modelos:
-                return modelos
+        modelos = db.obter_modelos_km()
+        if modelos:
+            return modelos
     except Exception:
         pass
     return []

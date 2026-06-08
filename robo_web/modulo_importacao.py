@@ -14,9 +14,15 @@ from robo_web.utils import (
     vinculo_veiculo_exige_desmarcar_despesa,
     voltar_ao_painel_nfe,
 )
-from robo_web.modulo_veiculo import processar_veiculo, _placa_para_mensagem_erro
+from robo_web.modulo_veiculo import (
+    processar_veiculo,
+    MSG_ERRO_PLACA_VEICULO,
+    MSG_ERRO_CARRETA_DUPLICADA,
+    MSG_ERRO_FALTA_VEICULO_OBS,
+)
 from robo_web.modulo_km import processar_km
 from robo_web.modulo_item import processar_cadastro_item
+from robo_web.modulo_fornecedor_cp import validar_e_corrigir_nome_fornecedor_imp_cp
 from robo_web.modulo_gravacao import finalizar_gravacao
 from robo_web.filial_embarque import (
     localizar_botao_atualizar_painel,
@@ -950,6 +956,16 @@ def _garantir_negocio_todos_itens_nfe(page, log, codigo_negocio, total_itens):
 
 def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
     """Função que gerencia o fluxo de preenchimento dentro da nota"""
+    ok_forn, msg_erro_forn = validar_e_corrigir_nome_fornecedor_imp_cp(page, log)
+    if not ok_forn:
+        abortar_nota_com_erro(
+            page,
+            log,
+            dados,
+            msg_erro_forn or 'Falha ao corrigir o nome do fornecedor conforme o XML da NFe.',
+        )
+        return False
+
     cod_filial, cod_ue, aplicar_fixo = obter_codigos_para_nota(log)
 
     select_unid_mestre = localizar_select_unidade_mestre(page)
@@ -1046,7 +1062,7 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
         # FLUXO 2: NOTA NORMAL (VEÍCULO / FROTA / FRETE)
         # ==============================================================
         # 1. PROCESSA O VEÍCULO E RECUPERA O TEXTO FINAL (ex: RRW0H88-13)
-        resultado_veiculo, placas_extraidas = processar_veiculo(
+        resultado_veiculo, placas_extraidas, erro_veiculo = processar_veiculo(
             page,
             log,
             idx,
@@ -1054,25 +1070,14 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
             modelos_usuario,
             placa_painel=painel_placa,
         )
-        
+
         if not resultado_veiculo:
-            campo_veic = page.locator(f'input[id="formCad:tableItemNota:{idx}:veiculoInput"]')
-            valor_campo = campo_veic.input_value().strip() if campo_veic.count() > 0 else ''
-            placa_erro = _placa_para_mensagem_erro(placas_extraidas, valor_campo)
-
-            if placas_extraidas:
-                msg_erro = (
-                    f"Placa '{placa_erro}' lida na NFe, mas falhou ao validar no ERP "
-                    f"(Item {idx + 1})."
-                )
-            elif valor_campo and 'NAO ENCONTRADO' not in valor_campo.upper():
-                msg_erro = (
-                    f"Placa '{placa_erro}' não encontrada/cadastrada no ERP "
-                    f"(Item {idx + 1})."
-                )
+            if erro_veiculo == 'carreta_duplicada':
+                msg_erro = MSG_ERRO_CARRETA_DUPLICADA
+            elif erro_veiculo == 'sem_placa_observacao':
+                msg_erro = MSG_ERRO_FALTA_VEICULO_OBS
             else:
-                msg_erro = f"Nenhuma placa encontrada para o Item {idx + 1}."
-
+                msg_erro = MSG_ERRO_PLACA_VEICULO
             abortar_nota_com_erro(page, log, dados, msg_erro)
             return False
             

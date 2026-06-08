@@ -93,6 +93,11 @@ def inicializar_banco():
     except sqlite3.OperationalError:
         pass
 
+    cursor.execute('''CREATE TABLE IF NOT EXISTS suporte_envios_automaticos (
+        chave TEXT PRIMARY KEY,
+        horario TEXT,
+        enviado_em TEXT DEFAULT '')''')
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS Tokens (
         id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT UNIQUE, 
         data_insercao DATE, ultima_checagem DATE, status TEXT DEFAULT 'PENDENTE')''')
@@ -166,11 +171,26 @@ def inicializar_banco():
     
     # Criação da tabela oficial da Frota
     cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
-        codVeiculo INTEGER PRIMARY KEY, 
-        placa TEXT UNIQUE, 
-        veiculoProprio TEXT,
+        codVeiculo INTEGER PRIMARY KEY,
+        cavalo TEXT DEFAULT '',
+        placa TEXT,
+        carreta1 TEXT DEFAULT '',
+        carreta2 TEXT DEFAULT '',
+        carreta3 TEXT DEFAULT '',
+        veiculoProprio TEXT DEFAULT '',
         ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
     )''')
+    _migrar_frota_erp_sem_unique_placa(cursor)
+    for sql in (
+        "ALTER TABLE frota_erp ADD COLUMN cavalo TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN carreta1 TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN carreta2 TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN carreta3 TEXT DEFAULT ''",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
     
     conn.commit()
     conn.close()
@@ -516,6 +536,41 @@ def carregar_configuracoes():
     return None
 
 
+def suporte_automatico_ja_enviado(chave):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT 1 FROM suporte_envios_automaticos WHERE chave = ? LIMIT 1',
+            (str(chave or '').strip(),),
+        )
+        enviado = cursor.fetchone() is not None
+        conn.close()
+        return enviado
+    except Exception:
+        return False
+
+
+def registrar_envio_suporte_automatico(chave, horario=''):
+    chave = str(chave or '').strip()
+    if not chave:
+        return False
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''INSERT OR REPLACE INTO suporte_envios_automaticos
+               (chave, horario, enviado_em) VALUES (?, ?, datetime('now','localtime'))''',
+            (chave, str(horario or '').strip()),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao registrar envio automático de suporte: {e}")
+        return False
+
+
 def atualizar_agendamento_email(tipo='', intervalo_horas=1, proxima_execucao='', ultima_execucao=None):
     try:
         conn = conectar_banco()
@@ -551,6 +606,7 @@ def salvar_filtros(
     ultimos_30_dias=False,
     hoje_apenas=False,
     fornecedores_fatura_afaturar='',
+    cod_tipo_fornecedor='',
 ):
     conn = conectar_banco()
     cursor = conn.cursor()
@@ -572,6 +628,7 @@ def salvar_filtros(
             "ALTER TABLE filtros_salvos ADD COLUMN ultimos_30_dias INTEGER DEFAULT 0",
             "ALTER TABLE filtros_salvos ADD COLUMN hoje_apenas INTEGER DEFAULT 0",
             "ALTER TABLE filtros_salvos ADD COLUMN fornecedores_fatura_afaturar TEXT DEFAULT ''",
+            "ALTER TABLE filtros_salvos ADD COLUMN cod_tipo_fornecedor TEXT DEFAULT ''",
         ):
             try:
                 cursor.execute(sql)
@@ -588,12 +645,14 @@ def salvar_filtros(
             int(bool(ultimos_30_dias)),
             int(bool(hoje_apenas)),
             str(fornecedores_fatura_afaturar or '').strip(),
+            str(cod_tipo_fornecedor or '').strip(),
         )
         if row:
             cursor.execute(
                 '''UPDATE filtros_salvos
                    SET mes=?, ano=?, cod_filial=?, cod_unidade_embarque=?,
-                       ultimos_30_dias=?, hoje_apenas=?, fornecedores_fatura_afaturar=?
+                       ultimos_30_dias=?, hoje_apenas=?, fornecedores_fatura_afaturar=?,
+                       cod_tipo_fornecedor=?
                    WHERE id=?''',
                 valores + (row[0],),
             )
@@ -601,8 +660,8 @@ def salvar_filtros(
             cursor.execute(
                 '''INSERT INTO filtros_salvos
                    (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias,
-                    hoje_apenas, fornecedores_fatura_afaturar)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    hoje_apenas, fornecedores_fatura_afaturar, cod_tipo_fornecedor)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 valores,
             )
         conn.commit()
@@ -619,7 +678,7 @@ def carregar_filtros():
         cursor = conn.cursor()
         cursor.execute(
             '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias,
-                      hoje_apenas, fornecedores_fatura_afaturar
+                      hoje_apenas, fornecedores_fatura_afaturar, cod_tipo_fornecedor
                FROM filtros_salvos ORDER BY id DESC LIMIT 1''',
         )
         resultado = cursor.fetchone()
@@ -633,6 +692,7 @@ def carregar_filtros():
                 'ultimos_30_dias': bool(resultado[4]) if len(resultado) > 4 else False,
                 'hoje_apenas': bool(resultado[5]) if len(resultado) > 5 else False,
                 'fornecedores_fatura_afaturar': (resultado[6] or '') if len(resultado) > 6 else '',
+                'cod_tipo_fornecedor': (resultado[7] or '') if len(resultado) > 7 else '',
             }
         return None
     except Exception:
@@ -976,8 +1036,26 @@ def validar_lista_modelos_placa(modelos_str):
     return True, '', modelos
 
 
+def parse_lista_modelos_km(modelos_str):
+    """
+    Separa vários modelos de KM.
+    Vírgula decimal (ex.: 111.111,11) não quebra o modelo.
+    Nova vírgula só separa quando logo após vier letra (início do próximo texto).
+    """
+    texto = str(modelos_str or '').strip()
+    if not texto:
+        return []
+    partes = re.split(r',(?=\s*[A-Za-zÀ-ÿ])', texto)
+    return [p.strip() for p in partes if p.strip()]
+
+
+def juntar_lista_modelos_km(modelos):
+    lista = [str(m or '').strip() for m in (modelos or []) if str(m or '').strip()]
+    return ', '.join(lista)
+
+
 def validar_lista_modelos_km(modelos_str):
-    modelos = [m.strip() for m in str(modelos_str or '').split(',') if m.strip()]
+    modelos = parse_lista_modelos_km(modelos_str)
     if not modelos:
         return True, '', modelos
     for modelo in modelos:
@@ -1024,7 +1102,7 @@ def salvar_modelos_km(modelos_str):
     c = conn.cursor()
     c.execute('DELETE FROM config_km') 
     
-    modelos = [m.strip() for m in modelos_str.split(',') if m.strip()]
+    modelos = parse_lista_modelos_km(modelos_str)
     for m in modelos:
         c.execute('INSERT INTO config_km (modelo) VALUES (?)', (m,))
         
@@ -1033,40 +1111,418 @@ def salvar_modelos_km(modelos_str):
 
 def obter_modelos_km_string():
     modelos = obter_modelos_km() 
-    return ", ".join(modelos)
+    return juntar_lista_modelos_km(modelos)
 
-def sincronizar_frota_erp(lista_veiculos):
-    import sqlite3
+def normalizar_placa_frota(placa):
+    return str(placa or '').replace('-', '').replace(' ', '').upper().strip()
+
+
+MSG_ERRO_PLACA_VEICULO = 'erro placa veiculo'
+MSG_ERRO_CARRETA_DUPLICADA = 'a mesma carreta esta em mais de um cavalo'
+MSG_ERRO_FALTA_VEICULO_OBS = (
+    'falta veiculo na observacao e nfe nao esta marcada para estoque'
+)
+
+_COLUNAS_CARRETA_FROTA = ('carreta1', 'carreta2', 'carreta3')
+_CHAVE_ULTIMA_SYNC_FROTA = 'ultima_sincronizacao_frota'
+
+
+def _garantir_tabela_config_sistema(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS config_sistema (
+            chave TEXT PRIMARY KEY,
+            valor TEXT
+        )''',
+    )
+
+
+def registrar_ultima_sincronizacao_frota(data_hora=None, conn=None):
+    """Grava data/hora da última sincronização do painel de veículos."""
+    fechar = False
+    if data_hora is None:
+        data_hora = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    try:
+        if conn is None:
+            conn = conectar_banco()
+            fechar = True
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            '''INSERT INTO config_sistema (chave, valor)
+               VALUES (?, ?)
+               ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor''',
+            (_CHAVE_ULTIMA_SYNC_FROTA, str(data_hora)),
+        )
+        if fechar:
+            conn.commit()
+            conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao registrar última sincronização da frota: {e}')
+        return False
+
+
+def obter_ultima_sincronizacao_frota():
+    """Retorna texto da última atualização do painel de veículos ou string vazia."""
     try:
         conn = conectar_banco()
         cursor = conn.cursor()
-        
-        # =======================================================
-        # GARANTIA ABSOLUTA: Cria a tabela aqui mesmo se ela não existir!
-        # =======================================================
-        cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
-            codVeiculo INTEGER PRIMARY KEY, 
-            placa TEXT UNIQUE, 
-            veiculoProprio TEXT,
-            ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        # Agora salva os veículos
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            'SELECT valor FROM config_sistema WHERE chave = ?',
+            (_CHAVE_ULTIMA_SYNC_FROTA,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''
+
+
+def _migrar_frota_erp_sem_unique_placa(cursor):
+    """Remove UNIQUE legado em placa (carretas podem repetir entre cavalos)."""
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='frota_erp'",
+    )
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return
+
+    ddl = str(row[0]).upper()
+    if 'UNIQUE' not in ddl or 'PLACA' not in ddl:
+        return
+
+    cursor.execute('DROP TABLE frota_erp')
+    cursor.execute('''CREATE TABLE frota_erp (
+        codVeiculo INTEGER PRIMARY KEY,
+        cavalo TEXT DEFAULT '',
+        placa TEXT,
+        carreta1 TEXT DEFAULT '',
+        carreta2 TEXT DEFAULT '',
+        carreta3 TEXT DEFAULT '',
+        veiculoProprio TEXT DEFAULT '',
+        ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+
+
+def _garantir_colunas_frota_erp(cursor):
+    cursor.execute('''CREATE TABLE IF NOT EXISTS frota_erp (
+        codVeiculo INTEGER PRIMARY KEY,
+        cavalo TEXT DEFAULT '',
+        placa TEXT,
+        carreta1 TEXT DEFAULT '',
+        carreta2 TEXT DEFAULT '',
+        carreta3 TEXT DEFAULT '',
+        veiculoProprio TEXT DEFAULT '',
+        ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    _migrar_frota_erp_sem_unique_placa(cursor)
+    for sql in (
+        "ALTER TABLE frota_erp ADD COLUMN cavalo TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN carreta1 TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN carreta2 TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN carreta3 TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN movimentacao_carreta TEXT DEFAULT ''",
+        "ALTER TABLE frota_erp ADD COLUMN data_movimentacao TEXT DEFAULT ''",
+    ):
+        try:
+            cursor.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+    _garantir_tabela_historico_movimentacao_carreta(cursor)
+
+
+def _garantir_tabela_historico_movimentacao_carreta(cursor):
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS frota_historico_movimentacao (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa_carreta TEXT,
+            cod_veiculo_origem INTEGER,
+            placa_cavalo_origem TEXT,
+            cod_veiculo_destino INTEGER,
+            placa_cavalo_destino TEXT,
+            data_movimentacao TEXT,
+            texto_resumo TEXT
+        )''',
+    )
+
+
+def _carregar_linhas_frota_erp(cursor=None):
+    fechar = False
+    if cursor is None:
+        conn = conectar_banco()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        _garantir_colunas_frota_erp(cursor)
+        fechar = True
+    else:
+        conn = None
+
+    cursor.execute(
+        '''SELECT codVeiculo, cavalo, placa, carreta1, carreta2, carreta3, veiculoProprio
+           FROM frota_erp ORDER BY codVeiculo ASC''',
+    )
+    colunas = [desc[0] for desc in (cursor.description or [])]
+    linhas = []
+    for row in cursor.fetchall():
+        if hasattr(row, 'keys'):
+            linhas.append(dict(row))
+        elif colunas:
+            linhas.append(dict(zip(colunas, row)))
+        else:
+            linhas.append({})
+    if fechar:
+        conn.close()
+    return linhas
+
+
+def detectar_placas_carreta_duplicadas(linhas=None):
+    """
+    Placas repetidas em carreta1/2/3 em mais de um codVeiculo (cavalo).
+    """
+    if linhas is None:
+        linhas = _carregar_linhas_frota_erp()
+
+    indice = {}
+    for row in linhas:
+        cod = str(row.get('codVeiculo') or '').strip()
+        if not cod:
+            continue
+        for coluna in _COLUNAS_CARRETA_FROTA:
+            placa = normalizar_placa_frota(row.get(coluna))
+            if not placa:
+                continue
+            indice.setdefault(placa, set()).add(cod)
+
+    return {placa for placa, cods in indice.items() if len(cods) > 1}
+
+
+def linha_frota_tem_carreta_duplicada(row, placas_duplicadas=None):
+    if placas_duplicadas is None:
+        placas_duplicadas = detectar_placas_carreta_duplicadas()
+    for coluna in _COLUNAS_CARRETA_FROTA:
+        if normalizar_placa_frota(row.get(coluna)) in placas_duplicadas:
+            return True
+    return False
+
+
+def resolver_placa_na_frota(placa, linhas=None):
+    """
+    Resolve placa no painel da frota.
+    Retorno: status ok | nao_encontrado | carreta_duplicada
+    """
+    placa_norm = normalizar_placa_frota(placa)
+    if not placa_norm:
+        return {'status': 'nao_encontrado', 'placa': ''}
+
+    if linhas is None:
+        linhas = _carregar_linhas_frota_erp()
+
+    correspondencias = []
+    for row in linhas:
+        cod = str(row.get('codVeiculo') or '').strip()
+        if not cod:
+            continue
+        for coluna in ('placa',) + _COLUNAS_CARRETA_FROTA:
+            if normalizar_placa_frota(row.get(coluna)) == placa_norm:
+                correspondencias.append((cod, coluna))
+
+    if not correspondencias:
+        return {'status': 'nao_encontrado', 'placa': placa_norm}
+
+    codigos = sorted({cod for cod, _ in correspondencias})
+    carreta_hits = [(cod, col) for cod, col in correspondencias if col in _COLUNAS_CARRETA_FROTA]
+    codigos_carreta = sorted({cod for cod, _ in carreta_hits})
+
+    if len(codigos_carreta) > 1:
+        return {
+            'status': 'carreta_duplicada',
+            'placa': placa_norm,
+            'codigos': codigos_carreta,
+        }
+
+    if len(codigos) > 1:
+        return {
+            'status': 'carreta_duplicada',
+            'placa': placa_norm,
+            'codigos': codigos,
+        }
+
+    cod, coluna = correspondencias[0]
+    return {
+        'status': 'ok',
+        'placa': placa_norm,
+        'cod_veiculo': cod,
+        'coluna': coluna,
+    }
+
+
+def obter_cod_veiculo_por_placa(placa):
+    """
+    Busca codVeiculo na frota comparando placa, carreta1, carreta2 e carreta3.
+    Retorna (cod_veiculo, coluna_encontrada) ou ('', '').
+    """
+    resultado = resolver_placa_na_frota(placa)
+    if resultado.get('status') != 'ok':
+        return '', ''
+    return resultado.get('cod_veiculo', ''), resultado.get('coluna', '')
+
+
+def _mapear_carretas_por_veiculo(linhas):
+    """Mapeia placa de carreta -> cavalo onde estava."""
+    mapa = {}
+    for row in linhas or []:
+        cod = row.get('codVeiculo')
+        if cod is None or str(cod).strip() == '':
+            continue
+        try:
+            cod_int = int(cod)
+        except (TypeError, ValueError):
+            continue
+        placa_cav = normalizar_placa_frota(row.get('placa'))
+        for coluna in _COLUNAS_CARRETA_FROTA:
+            placa_carreta = normalizar_placa_frota(row.get(coluna))
+            if placa_carreta:
+                mapa[placa_carreta] = {
+                    'codVeiculo': cod_int,
+                    'placa_cavalo': placa_cav,
+                }
+    return mapa
+
+
+def detectar_movimentacoes_carreta(linhas_antigas, linhas_novas, data_movimentacao):
+    """
+    Compara frota anterior com a nova importação do relatório 117.
+    Registra carretas que mudaram de um cavalo para outro.
+    """
+    antigo = _mapear_carretas_por_veiculo(linhas_antigas)
+    novo = _mapear_carretas_por_veiculo(linhas_novas)
+    movimentos = []
+
+    for placa_carreta, info_ant in antigo.items():
+        info_nov = novo.get(placa_carreta)
+        if not info_nov or info_nov['codVeiculo'] == info_ant['codVeiculo']:
+            continue
+
+        placa_orig = info_ant['placa_cavalo'] or str(info_ant['codVeiculo'])
+        placa_dest = info_nov['placa_cavalo'] or str(info_nov['codVeiculo'])
+        texto = (
+            f'carreta {placa_carreta} saiu do veiculo {placa_orig} '
+            f'p/ veiculo {placa_dest}'
+        )
+        movimentos.append({
+            'placa_carreta': placa_carreta,
+            'cod_veiculo_origem': info_ant['codVeiculo'],
+            'placa_cavalo_origem': info_ant['placa_cavalo'],
+            'cod_veiculo_destino': info_nov['codVeiculo'],
+            'placa_cavalo_destino': info_nov['placa_cavalo'],
+            'data_movimentacao': data_movimentacao,
+            'texto_resumo': texto,
+        })
+
+    return movimentos
+
+
+def _registrar_historico_movimentacoes_carreta(cursor, movimentos):
+    _garantir_tabela_historico_movimentacao_carreta(cursor)
+    for mov in movimentos or []:
+        cursor.execute(
+            '''INSERT INTO frota_historico_movimentacao (
+                placa_carreta, cod_veiculo_origem, placa_cavalo_origem,
+                cod_veiculo_destino, placa_cavalo_destino,
+                data_movimentacao, texto_resumo
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (
+                mov.get('placa_carreta', ''),
+                mov.get('cod_veiculo_origem'),
+                mov.get('placa_cavalo_origem', ''),
+                mov.get('cod_veiculo_destino'),
+                mov.get('placa_cavalo_destino', ''),
+                mov.get('data_movimentacao', ''),
+                mov.get('texto_resumo', ''),
+            ),
+        )
+
+
+def _agrupar_movimentacoes_por_cavalo_origem(movimentos):
+    por_cavalo = {}
+    for mov in movimentos or []:
+        cod = mov.get('cod_veiculo_origem')
+        if cod is None:
+            continue
+        por_cavalo.setdefault(int(cod), []).append(mov.get('texto_resumo', ''))
+    return {
+        cod: ' | '.join(textos)
+        for cod, textos in por_cavalo.items()
+        if textos
+    }
+
+
+def sincronizar_frota_erp(lista_veiculos):
+    conn = None
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_colunas_frota_erp(cursor)
+        conn.commit()
+
+        linhas_antigas = _carregar_linhas_frota_erp(cursor)
+        data_sync = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        movimentos = detectar_movimentacoes_carreta(
+            linhas_antigas, lista_veiculos, data_sync,
+        )
+        mov_por_cavalo = _agrupar_movimentacoes_por_cavalo_origem(movimentos)
+        if movimentos:
+            _registrar_historico_movimentacoes_carreta(cursor, movimentos)
+
+        cursor.execute('DELETE FROM frota_erp')
+
         for v in lista_veiculos:
-            cursor.execute('''
-                INSERT INTO frota_erp (codVeiculo, placa, veiculoProprio, ultima_atualizacao)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(placa) DO UPDATE SET
-                codVeiculo=excluded.codVeiculo,
-                veiculoProprio=excluded.veiculoProprio,
-                ultima_atualizacao=CURRENT_TIMESTAMP
-            ''', (v.get('codVeiculo'), str(v.get('placa')).strip(), str(v.get('veiculoProprio')).strip()))
-            
+            cod = v.get('codVeiculo')
+            if cod is None or str(cod).strip() == '':
+                continue
+            placa = normalizar_placa_frota(v.get('placa'))
+            if not placa:
+                continue
+            cod_int = int(cod)
+            movimentacao = mov_por_cavalo.get(cod_int, '')
+            data_mov = data_sync if movimentacao else ''
+            cursor.execute(
+                '''
+                INSERT INTO frota_erp (
+                    codVeiculo, cavalo, placa, carreta1, carreta2, carreta3,
+                    veiculoProprio, ultima_atualizacao,
+                    movimentacao_carreta, data_movimentacao
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+                ''',
+                (
+                    cod_int,
+                    str(v.get('cavalo') or '').strip().upper(),
+                    placa,
+                    normalizar_placa_frota(v.get('carreta1')),
+                    normalizar_placa_frota(v.get('carreta2')),
+                    normalizar_placa_frota(v.get('carreta3')),
+                    str(v.get('veiculoProprio') or '').strip(),
+                    movimentacao,
+                    data_mov,
+                ),
+            )
+
+        registrar_ultima_sincronizacao_frota(data_hora=data_sync, conn=conn)
         conn.commit()
         conn.close()
+        if movimentos:
+            print(f' 📦 {len(movimentos)} movimentação(ões) de carreta registrada(s).')
         return True
     except Exception as e:
         print(f"Erro ao salvar frota no banco: {e}")
+        if conn is not None:
+            try:
+                conn.rollback()
+                conn.close()
+            except Exception:
+                pass
         return False
     
 def obter_vinculo_veiculo(codigo_veiculo):
@@ -1344,24 +1800,121 @@ def sincronizar_itens_erp(lista_itens):
         print(f"Erro ao salvar itens no banco: {e}")
         return False
 
-def obter_frota_erp(limite=100):
+def _carregar_historico_movimentacoes_agrupado(cursor=None):
+    """Agrupa histórico de movimentações por cavalo de origem (codVeiculo)."""
+    fechar = False
+    if cursor is None:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_colunas_frota_erp(cursor)
+        fechar = True
+    else:
+        conn = None
+
+    _garantir_tabela_historico_movimentacao_carreta(cursor)
+    cursor.execute(
+        '''SELECT cod_veiculo_origem, data_movimentacao, texto_resumo
+           FROM frota_historico_movimentacao
+           ORDER BY id ASC''',
+    )
+    colunas = [desc[0] for desc in (cursor.description or [])]
+    agrupado = {}
+    for row in cursor.fetchall():
+        if hasattr(row, 'keys'):
+            item = dict(row)
+        elif colunas:
+            item = dict(zip(colunas, row))
+        else:
+            continue
+        cod = item.get('cod_veiculo_origem')
+        if cod is None:
+            continue
+        try:
+            cod_int = int(cod)
+        except (TypeError, ValueError):
+            continue
+        agrupado.setdefault(cod_int, []).append(item)
+
+    if fechar:
+        conn.close()
+    return agrupado
+
+
+def _formatar_historico_movimentacoes_cavalo(registros, max_itens=10):
+    """Formata várias movimentações do mesmo cavalo para exibição no painel."""
+    if not registros:
+        return '', ''
+    recentes = registros[-max_itens:]
+    partes = []
+    for reg in recentes:
+        data = str(reg.get('data_movimentacao') or '').strip()
+        texto = str(reg.get('texto_resumo') or '').strip()
+        if data and texto:
+            partes.append(f'{data} — {texto}')
+        elif texto:
+            partes.append(texto)
+    return ' | '.join(partes), str(recentes[-1].get('data_movimentacao') or '').strip()
+
+
+def _veiculo_corresponde_filtro_placa(veiculo, placa_filtro):
+    if not placa_filtro:
+        return True
+    filtro = normalizar_placa_frota(placa_filtro)
+    if not filtro:
+        return True
+    for coluna in ('placa',) + _COLUNAS_CARRETA_FROTA:
+        placa = normalizar_placa_frota(veiculo.get(coluna))
+        if placa and filtro in placa:
+            return True
+    return False
+
+
+def obter_frota_erp(limite=100, placa_filtro=''):
     """Lê os veículos da frota para preencher a tela de Veículos Ativos."""
     try:
         conn = conectar_banco()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        _garantir_colunas_frota_erp(cursor)
         sql = (
-            "SELECT codVeiculo, placa, veiculoProprio, ultima_atualizacao "
+            "SELECT codVeiculo, cavalo, placa, carreta1, carreta2, carreta3, "
+            "veiculoProprio, ultima_atualizacao, movimentacao_carreta, data_movimentacao "
             "FROM frota_erp ORDER BY codVeiculo ASC"
         )
-        if limite not in (None, "", "Todos"):
-            try:
-                sql += f" LIMIT {max(1, int(limite))}"
-            except (TypeError, ValueError):
-                pass
         cursor.execute(sql)
         veiculos = [dict(row) for row in cursor.fetchall()]
+        historico_por_cavalo = _carregar_historico_movimentacoes_agrupado(cursor)
         conn.close()
+
+        placa_filtro = str(placa_filtro or '').strip()
+        if placa_filtro:
+            veiculos = [
+                v for v in veiculos
+                if _veiculo_corresponde_filtro_placa(v, placa_filtro)
+            ]
+
+        if limite not in (None, "", "Todos"):
+            try:
+                veiculos = veiculos[:max(1, int(limite))]
+            except (TypeError, ValueError):
+                pass
+
+        placas_dup = detectar_placas_carreta_duplicadas()
+        for veiculo in veiculos:
+            cod = veiculo.get('codVeiculo')
+            try:
+                cod_int = int(cod)
+            except (TypeError, ValueError):
+                cod_int = None
+            if cod_int is not None:
+                regs = historico_por_cavalo.get(cod_int, [])
+                if regs:
+                    texto, data = _formatar_historico_movimentacoes_cavalo(regs)
+                    veiculo['movimentacao_carreta'] = texto
+                    veiculo['data_movimentacao'] = data
+            veiculo['carreta_duplicada'] = linha_frota_tem_carreta_duplicada(
+                veiculo, placas_dup,
+            )
         return veiculos
     except Exception as e:
         print(f"Erro ao ler frota do banco ({caminho_banco()}): {e}")

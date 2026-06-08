@@ -1,5 +1,6 @@
 import time
 import os
+import re
 from datetime import datetime
 import pandas as pd
 from playwright.sync_api import sync_playwright
@@ -7,6 +8,67 @@ import database_setup as db
 from robo_web.erp_lock import ERP_LOCK
 from robo_web.runtime_config import usar_headless
 from robo_web.utils import fazer_login_erp
+
+
+def _normalizar_nome_coluna_frota(nome):
+    return re.sub(r'[^a-z0-9]', '', str(nome or '').strip().lower())
+
+
+def _mapear_colunas_frota(df):
+    """Padroniza colunas do relatório 117 para o banco local."""
+    mapa_destino = {
+        'codveiculo': 'codVeiculo',
+        'cavalo': 'cavalo',
+        'placa': 'placa',
+        'carreta1': 'carreta1',
+        'carreta2': 'carreta2',
+        'carreta3': 'carreta3',
+        'veiculoproprio': 'veiculoProprio',
+        'veicproprio': 'veiculoProprio',
+        'tipovinculo': 'veiculoProprio',
+        'vinculo': 'veiculoProprio',
+    }
+    renomear = {}
+    for col in df.columns:
+        chave = _normalizar_nome_coluna_frota(col)
+        if chave in mapa_destino:
+            renomear[col] = mapa_destino[chave]
+    if renomear:
+        df = df.rename(columns=renomear)
+    return df
+
+
+def _preparar_lista_veiculos_frota(df):
+    df = _mapear_colunas_frota(df)
+    if 'codVeiculo' not in df.columns or 'placa' not in df.columns:
+        raise RuntimeError(
+            'Relatório 117 sem colunas codVeiculo/placa. '
+            'Verifique o filtro Cavalo=Cavalo e o layout do relatório.'
+        )
+
+    for col in ('carreta1', 'carreta2', 'carreta3', 'cavalo', 'veiculoProprio'):
+        if col not in df.columns:
+            df[col] = ''
+
+    df = df.fillna('')
+    df = df.dropna(subset=['placa'])
+    df = df[df['placa'].astype(str).str.strip() != '']
+
+    registros = []
+    for _, row in df.iterrows():
+        cod = str(row.get('codVeiculo', '')).strip()
+        if not cod or not str(cod).replace('.', '', 1).isdigit():
+            continue
+        registros.append({
+            'codVeiculo': int(float(cod)),
+            'cavalo': str(row.get('cavalo', '')).strip(),
+            'placa': str(row.get('placa', '')).strip(),
+            'carreta1': str(row.get('carreta1', '')).strip(),
+            'carreta2': str(row.get('carreta2', '')).strip(),
+            'carreta3': str(row.get('carreta3', '')).strip(),
+            'veiculoProprio': str(row.get('veiculoProprio', '')).strip(),
+        })
+    return registros
 
 
 def baixar_e_importar_frota(config_override=None):
@@ -64,12 +126,12 @@ def _baixar_e_importar_frota_impl(config_override=None):
             nova_aba.locator('text="### Link para exportação ###"').first.evaluate("node => node.click()")
             nova_aba.wait_for_load_state("networkidle")
             
-            print(" -> Preenchendos os filtros de Data, Veículo e Cavalo...")
+            print(" -> Preenchendo filtros de Data, Liberado (Sim), Veículo e Cavalo (Cavalo)...")
             nova_aba.locator('input[id="formrelFilVeicDados:RelFilVeicDados_dataIniInputDate"]').fill("01/01/2000")
             nova_aba.locator('input[id="formrelFilVeicDados:RelFilVeicDados_dataIniInputDate"]').press("Tab")
-            nova_aba.locator('select[id="formrelFilVeicDados:RelFilVeicDados_filtroLiberado"]').select_option(value="3")
+            nova_aba.locator('select[id="formrelFilVeicDados:RelFilVeicDados_filtroLiberado"]').select_option(value="1")
             nova_aba.locator('select[id="formrelFilVeicDados:RelFilVeicDados_veiculoProprio"]').select_option(value="5")
-            nova_aba.locator('select[id="formrelFilVeicDados:RelFilVeicDados_cavalo"]').select_option(value="T")
+            nova_aba.locator('select[id="formrelFilVeicDados:RelFilVeicDados_cavalo"]').select_option(value="S")
             
             print(" -> Gerando relatório...")
             nova_aba.locator('input[id*="filtrar"], input[value="Gerar"], input[value="Filtrar"]').first.click(force=True, no_wait_after=True)
@@ -92,10 +154,18 @@ def _baixar_e_importar_frota_impl(config_override=None):
                 with open(caminho_arquivo, 'r', encoding='latin-1') as f:
                     df = pd.read_html(f.read(), decimal=',', thousands='.')[0]
             
-            df = df.dropna(subset=['placa']) 
-            lista_veiculos = df.to_dict('records')
-            db.sincronizar_frota_erp(lista_veiculos)
-            print(f" 🌟 SUCESSO! {len(lista_veiculos)} veículos sincronizados.")
+            lista_veiculos = _preparar_lista_veiculos_frota(df)
+            if not db.sincronizar_frota_erp(lista_veiculos):
+                print(' ❌ Falha ao gravar frota no banco de dados.')
+                return False
+            duplicadas = db.detectar_placas_carreta_duplicadas()
+            print(f' 🌟 SUCESSO! {len(lista_veiculos)} veículos sincronizados.')
+            if duplicadas:
+                print(
+                    f" ⚠️ {len(duplicadas)} carreta(s) duplicada(s) em mais de um cavalo: "
+                    f"{', '.join(sorted(duplicadas)[:8])}"
+                    f"{'...' if len(duplicadas) > 8 else ''}"
+                )
             return True
                 
         except Exception as e:

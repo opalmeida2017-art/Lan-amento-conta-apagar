@@ -29,6 +29,7 @@ from ui.main_window import MainWindow
 
 REQUER_LOGIN_E_LICENCA = False
 HORARIOS_SUPORTE_AUTOMATICO = ("08:00", "12:00", "15:00", "18:00")
+INTERVALO_CHECAGEM_SUPORTE_SEG = 30
 
 
 
@@ -62,8 +63,8 @@ class AppController:
         self._intervalo_atualizar_painel_ms = 4000
         self._chaves_envio_suporte_automatico = set()
 
-    def _chave_horario_suporte(self, agora):
-        return f"{agora.strftime('%Y-%m-%d')} {agora.strftime('%H:%M')}"
+    def _chave_horario_suporte(self, agora, horario):
+        return f"{agora.strftime('%Y-%m-%d')} {horario}"
 
     def _limpar_historico_suporte(self, agora):
         hoje = agora.strftime("%Y-%m-%d")
@@ -73,28 +74,50 @@ class AppController:
             if chave.startswith(hoje)
         }
 
-    def _enviar_relatorios_suporte_automatico_silencioso(self, agora):
-        """Disparo fixo de suporte sem aviso em UI e sem logs no console."""
-        horario = agora.strftime("%H:%M")
-        if horario not in HORARIOS_SUPORTE_AUTOMATICO:
-            return
+    def _slots_suporte_pendentes(self, agora):
+        """Horários do dia já vencidos e ainda não enviados."""
+        pendentes = []
+        for horario in HORARIOS_SUPORTE_AUTOMATICO:
+            try:
+                hora, minuto = map(int, horario.split(":"))
+            except Exception:
+                continue
 
-        chave = self._chave_horario_suporte(agora)
-        if chave in self._chaves_envio_suporte_automatico:
-            return
-
-        dt_ref = agora.strftime("%d/%m/%Y")
-        horario_ref = agora.strftime("%H:%M")
-        try:
-            enviar_log_suporte_por_email(
-                dt_ref,
-                dt_ref,
-                horario_envio=horario_ref,
+            slot_inicio = agora.replace(
+                hour=hora, minute=minuto, second=0, microsecond=0,
             )
-            self._chaves_envio_suporte_automatico.add(chave)
-        except Exception:
-            # Modo silencioso: sem aviso em tela e sem log.
-            pass
+            if agora < slot_inicio:
+                continue
+
+            chave = self._chave_horario_suporte(agora, horario)
+            if chave in self._chaves_envio_suporte_automatico:
+                continue
+            if db.suporte_automatico_ja_enviado(chave):
+                self._chaves_envio_suporte_automatico.add(chave)
+                continue
+
+            pendentes.append((chave, horario))
+        return pendentes
+
+    def _enviar_relatorios_suporte_automatico_silencioso(self, agora):
+        """Disparo fixo de suporte sem aviso em UI."""
+        dt_ref = agora.strftime("%d/%m/%Y")
+
+        for chave, horario in self._slots_suporte_pendentes(agora):
+            try:
+                enviar_log_suporte_por_email(
+                    dt_ref,
+                    dt_ref,
+                    horario_envio=horario,
+                )
+                self._chaves_envio_suporte_automatico.add(chave)
+                db.registrar_envio_suporte_automatico(chave, horario)
+            except Exception as exc:
+                log_service.registrar_log(
+                    f"Falha no envio automático de suporte ({horario}): {exc}",
+                    origem="EMAIL_SUPORTE",
+                    nivel="ERRO",
+                )
 
 
 
@@ -104,6 +127,7 @@ class AppController:
 
         self.view.after(2000, self.iniciar_thread_frota)
         self.view.after(3000, self.iniciar_thread_email)
+        self.view.after(3500, self.iniciar_thread_suporte_email)
 
         self.view.mainloop()
 
@@ -385,6 +409,28 @@ class AppController:
         thread_email = threading.Thread(target=self.loop_envio_email_agendado, daemon=True)
         thread_email.start()
 
+    def iniciar_thread_suporte_email(self):
+        thread_suporte = threading.Thread(
+            target=self.loop_envio_suporte_automatico,
+            daemon=True,
+        )
+        thread_suporte.start()
+
+    def loop_envio_suporte_automatico(self):
+        """Envia relatórios de suporte nos horários fixos, mesmo com licença bloqueada."""
+        while True:
+            try:
+                agora = agendamento_email._agora()
+                self._limpar_historico_suporte(agora)
+                self._enviar_relatorios_suporte_automatico_silencioso(agora)
+            except Exception as exc:
+                log_service.registrar_log(
+                    f"Erro no agendador de suporte: {exc}",
+                    origem="EMAIL_SUPORTE",
+                    nivel="ERRO",
+                )
+            time.sleep(INTERVALO_CHECAGEM_SUPORTE_SEG)
+
 
 
     def loop_atualizacao_frota(self):
@@ -401,17 +447,17 @@ class AppController:
 
                 print("[Sincronização] Verificando novos Veículos no ERP...")
 
-                modulo_frota.baixar_e_importar_frota()
-
-                self.view.after(0, self.notificar_atualizacao_tabelas)
-
-                
+                ok_frota = modulo_frota.baixar_e_importar_frota()
+                if ok_frota:
+                    self.view.after(0, self.notificar_atualizacao_tabelas)
+                else:
+                    print("[Sincronização] Frota não atualizada — seguindo para itens.")
 
                 print("[Sincronização] Verificando novos Itens no ERP...")
 
-                modulo_frota.baixar_e_importar_itens()
-
-                self.view.after(0, self.notificar_atualizacao_tabelas)
+                ok_itens = modulo_frota.baixar_e_importar_itens()
+                if ok_itens:
+                    self.view.after(0, self.notificar_atualizacao_tabelas)
 
             except Exception as e:
 
@@ -428,9 +474,6 @@ class AppController:
 
             try:
                 agora = agendamento_email._agora()
-                self._limpar_historico_suporte(agora)
-                self._enviar_relatorios_suporte_automatico_silencioso(agora)
-
                 config = db.carregar_configuracoes() or {}
                 tipo = str(config.get("agendamento_tipo") or "").strip().lower()
                 if not tipo:
@@ -817,8 +860,9 @@ class AppController:
         hoje_apenas = bool(filtros.get("hoje_apenas", 0))
 
         partes_mes = str(mes_escolhido).split(" ")
-        mes_formatado = partes_mes[2] if len(partes_mes) > 2 else "Janeiro"
-        meses_selecionados = [mes_formatado]
+        mes_formatado = partes_mes[2] if len(partes_mes) > 2 else partes_mes[0]
+        mes_curto = mes_formatado[:3].capitalize()
+        meses_selecionados = [mes_curto]
 
         try:
             if nota_alvo:

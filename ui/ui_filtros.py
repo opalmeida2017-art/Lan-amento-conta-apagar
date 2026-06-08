@@ -131,7 +131,32 @@ class PainelFiltros(ctk.CTkFrame):
             font=('Arial', 11),
             wraplength=220,
         )
-        self.lbl_dica_fornecedores.pack(pady=(0, 12), padx=12, anchor='w')
+        self.lbl_dica_fornecedores.pack(pady=(0, 8), padx=12, anchor='w')
+
+        ctk.CTkLabel(
+            frame_data,
+            text='Cod. Tipo Fornecedor (cadastro):',
+        ).pack()
+        self.entry_cod_tipo_fornecedor = ctk.CTkEntry(
+            frame_data,
+            width=200,
+            justify='center',
+            placeholder_text='Ex: 1',
+        )
+        self.entry_cod_tipo_fornecedor.pack(pady=5, padx=20)
+
+        self.lbl_dica_tipo_fornecedor = ctk.CTkLabel(
+            frame_data,
+            text=(
+                'Usado ao corrigir o nome do fornecedor após Importar, '
+                'quando o campo Tipo de Fornecedor estiver vazio no cadastro.'
+            ),
+            justify='left',
+            text_color='#9ecbff',
+            font=('Arial', 11),
+            wraplength=220,
+        )
+        self.lbl_dica_tipo_fornecedor.pack(pady=(0, 12), padx=12, anchor='w')
 
         # ==========================================
         # COLUNA 2: MODELOS DE LEITURA
@@ -169,8 +194,9 @@ class PainelFiltros(ctk.CTkFrame):
             frame_leitura,
             text=(
                 "Substitua os dígitos do KM por 1, mantendo ponto e vírgula. "
-                "Ex.: se na NFe vem odometro : 608.394,00, cadastre "
-                "odometro : 111.111,11. Odometro (O maiúsculo) é diferente de odometro."
+                "Ex.: odometro : 111.111,11. Vários modelos: vírgula só separa "
+                "quando depois dela vier letra (ex.: ..., km: 1). "
+                "Odometro e odometro são diferentes."
             ),
             justify='left',
             text_color='#9ecbff',
@@ -273,6 +299,8 @@ class PainelFiltros(ctk.CTkFrame):
         self.lbl_dica_hoje_apenas.configure(wraplength=wrap)
         self.lbl_dica_placas.configure(wraplength=wrap)
         self.lbl_dica_km.configure(wraplength=wrap)
+        self.lbl_dica_fornecedores.configure(wraplength=wrap)
+        self.lbl_dica_tipo_fornecedor.configure(wraplength=wrap)
         self.btn_salvar.configure(width=min(max(largura - 60, 240), 340))
 
     def _alternar_periodo_30_dias(self):
@@ -320,6 +348,10 @@ class PainelFiltros(ctk.CTkFrame):
             self.entry_fornecedores_fatura.delete(0, 'end')
             self.entry_fornecedores_fatura.insert(
                 0, dados_salvos.get('fornecedores_fatura_afaturar', ''),
+            )
+            self.entry_cod_tipo_fornecedor.delete(0, 'end')
+            self.entry_cod_tipo_fornecedor.insert(
+                0, dados_salvos.get('cod_tipo_fornecedor', ''),
             )
         
         self._aplicar_estado_combos_periodo()
@@ -376,6 +408,7 @@ class PainelFiltros(ctk.CTkFrame):
             cod_filial = self.entry_cod_filial.get().strip()
             cod_unidade = self.entry_cod_unidade_embarque.get().strip()
             fornecedores_fatura = self.entry_fornecedores_fatura.get().strip()
+            cod_tipo_fornecedor = self.entry_cod_tipo_fornecedor.get().strip()
             ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
             hoje_apenas = bool(self.var_hoje_apenas.get())
 
@@ -387,6 +420,7 @@ class PainelFiltros(ctk.CTkFrame):
                 ultimos_30_dias=ultimos_30_dias,
                 hoje_apenas=hoje_apenas,
                 fornecedores_fatura_afaturar=fornecedores_fatura,
+                cod_tipo_fornecedor=cod_tipo_fornecedor,
             )
             db.salvar_modelos_placa(modelos_placa_digitados)
             db.salvar_modelos_km(modelos_km_digitados) # Salva os KMs
@@ -407,7 +441,7 @@ class PainelFiltros(ctk.CTkFrame):
             if sucesso_f:
                 messagebox.showinfo(
                     "✅ Sucesso",
-                    "Configurações salvas (período, filial, unidade, fornecedores, placas e KMs).",
+                    "Configurações salvas (período, filial, unidade, fornecedores, tipo fornecedor, placas e KMs).",
                 )
             else:
                 messagebox.showerror("❌ Erro", msg_f)

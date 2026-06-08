@@ -9,8 +9,11 @@ class VeiculosController:
         self.view = None
         self._sincronizando = False
 
-    def obter_veiculos_banco(self, limite=100):
-        return db.obter_frota_erp(limite=limite)
+    def obter_veiculos_banco(self, limite=100, placa_filtro=''):
+        return db.obter_frota_erp(limite=limite, placa_filtro=placa_filtro)
+
+    def obter_ultima_atualizacao_frota(self):
+        return db.obter_ultima_sincronizacao_frota()
 
     def sincronizar_frota_erp(self, ao_finalizar=None):
         if self._sincronizando:
