@@ -21,7 +21,15 @@ def caminho_banco():
 
 
 def conectar_banco(**kwargs):
-    return sqlite3.connect(caminho_banco(), **kwargs)
+    """Conexão SQLite com timeout (evita 'database is locked' imediato)."""
+    kwargs.setdefault('timeout', 30)
+    conn = sqlite3.connect(caminho_banco(), **kwargs)
+    try:
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=30000')
+    except sqlite3.OperationalError:
+        pass
+    return conn
 
 
 # ==========================================
@@ -127,6 +135,20 @@ def inicializar_banco():
     except sqlite3.OperationalError:
         pass
     try:
+        cursor.execute("ALTER TABLE filtros_salvos ADD COLUMN ultimos_15_dias INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS logs_email (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data_hora TEXT DEFAULT '',
+        tipo TEXT DEFAULT '',
+        assunto TEXT DEFAULT '',
+        destinatarios TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        detalhe TEXT DEFAULT ''
+    )''')
+    try:
         cursor.execute(
             "ALTER TABLE filtros_salvos ADD COLUMN fornecedores_fatura_afaturar TEXT DEFAULT ''",
         )
@@ -192,6 +214,50 @@ def inicializar_banco():
         except sqlite3.OperationalError:
             pass
     
+    cursor.execute('''CREATE TABLE IF NOT EXISTS tarifas_bancarias (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnpj TEXT,
+        razao_social TEXT DEFAULT '',
+        agencia TEXT DEFAULT '',
+        conta TEXT DEFAULT '',
+        data_movimento TEXT,
+        descricao TEXT,
+        valor TEXT,
+        status TEXT DEFAULT 'Pendente',
+        codigo_interno TEXT DEFAULT '',
+        erro_processamento TEXT DEFAULT '',
+        data_insercao TEXT DEFAULT '',
+        data_processamento TEXT DEFAULT '')''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS sicredi_mapa_contas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cnpj TEXT,
+        razao_social TEXT DEFAULT '',
+        agencia TEXT NOT NULL,
+        conta TEXT NOT NULL,
+        ultima_atualizacao TEXT DEFAULT '',
+        data_arquivo_xls TEXT DEFAULT '',
+        UNIQUE(agencia, conta))''')
+
+    try:
+        cursor.execute(
+            "ALTER TABLE sicredi_mapa_contas ADD COLUMN data_arquivo_xls TEXT DEFAULT ''",
+        )
+    except sqlite3.OperationalError:
+        pass
+    for coluna in ('cod_filial', 'cod_conta_erp'):
+        try:
+            cursor.execute(
+                f"ALTER TABLE sicredi_mapa_contas ADD COLUMN {coluna} TEXT DEFAULT ''",
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS sicredi_cnpj_filial (
+        cnpj_digits TEXT PRIMARY KEY,
+        cod_filial TEXT NOT NULL,
+        atualizado_em TEXT DEFAULT '')''')
+
     conn.commit()
     conn.close()
 
@@ -605,6 +671,7 @@ def salvar_filtros(
     cod_unidade_embarque='',
     ultimos_30_dias=False,
     hoje_apenas=False,
+    ultimos_15_dias=False,
     fornecedores_fatura_afaturar='',
     cod_tipo_fornecedor='',
 ):
@@ -629,6 +696,7 @@ def salvar_filtros(
             "ALTER TABLE filtros_salvos ADD COLUMN hoje_apenas INTEGER DEFAULT 0",
             "ALTER TABLE filtros_salvos ADD COLUMN fornecedores_fatura_afaturar TEXT DEFAULT ''",
             "ALTER TABLE filtros_salvos ADD COLUMN cod_tipo_fornecedor TEXT DEFAULT ''",
+            "ALTER TABLE filtros_salvos ADD COLUMN ultimos_15_dias INTEGER DEFAULT 0",
         ):
             try:
                 cursor.execute(sql)
@@ -644,6 +712,7 @@ def salvar_filtros(
             str(cod_unidade_embarque or '').strip(),
             int(bool(ultimos_30_dias)),
             int(bool(hoje_apenas)),
+            int(bool(ultimos_15_dias)),
             str(fornecedores_fatura_afaturar or '').strip(),
             str(cod_tipo_fornecedor or '').strip(),
         )
@@ -651,8 +720,8 @@ def salvar_filtros(
             cursor.execute(
                 '''UPDATE filtros_salvos
                    SET mes=?, ano=?, cod_filial=?, cod_unidade_embarque=?,
-                       ultimos_30_dias=?, hoje_apenas=?, fornecedores_fatura_afaturar=?,
-                       cod_tipo_fornecedor=?
+                       ultimos_30_dias=?, hoje_apenas=?, ultimos_15_dias=?,
+                       fornecedores_fatura_afaturar=?, cod_tipo_fornecedor=?
                    WHERE id=?''',
                 valores + (row[0],),
             )
@@ -660,8 +729,9 @@ def salvar_filtros(
             cursor.execute(
                 '''INSERT INTO filtros_salvos
                    (mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias,
-                    hoje_apenas, fornecedores_fatura_afaturar, cod_tipo_fornecedor)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                    hoje_apenas, ultimos_15_dias, fornecedores_fatura_afaturar,
+                    cod_tipo_fornecedor)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                 valores,
             )
         conn.commit()
@@ -678,7 +748,8 @@ def carregar_filtros():
         cursor = conn.cursor()
         cursor.execute(
             '''SELECT mes, ano, cod_filial, cod_unidade_embarque, ultimos_30_dias,
-                      hoje_apenas, fornecedores_fatura_afaturar, cod_tipo_fornecedor
+                      hoje_apenas, ultimos_15_dias, fornecedores_fatura_afaturar,
+                      cod_tipo_fornecedor
                FROM filtros_salvos ORDER BY id DESC LIMIT 1''',
         )
         resultado = cursor.fetchone()
@@ -691,8 +762,9 @@ def carregar_filtros():
                 'cod_unidade_embarque': resultado[3] or '',
                 'ultimos_30_dias': bool(resultado[4]) if len(resultado) > 4 else False,
                 'hoje_apenas': bool(resultado[5]) if len(resultado) > 5 else False,
-                'fornecedores_fatura_afaturar': (resultado[6] or '') if len(resultado) > 6 else '',
-                'cod_tipo_fornecedor': (resultado[7] or '') if len(resultado) > 7 else '',
+                'ultimos_15_dias': bool(resultado[6]) if len(resultado) > 6 else False,
+                'fornecedores_fatura_afaturar': (resultado[7] or '') if len(resultado) > 7 else '',
+                'cod_tipo_fornecedor': (resultado[8] or '') if len(resultado) > 8 else '',
             }
         return None
     except Exception:
@@ -713,10 +785,74 @@ def carregar_filtros():
                     'cod_unidade_embarque': (resultado[3] or '') if len(resultado) > 3 else '',
                     'ultimos_30_dias': bool(resultado[4]) if len(resultado) > 4 else False,
                     'hoje_apenas': False,
+                    'ultimos_15_dias': False,
                 }
         except Exception:
             pass
         return None
+
+
+def registrar_log_email(tipo, assunto, destinatarios, status, detalhe=''):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''INSERT INTO logs_email
+               (data_hora, tipo, assunto, destinatarios, status, detalhe)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                str(tipo or '').strip(),
+                str(assunto or '').strip(),
+                str(destinatarios or '').strip(),
+                str(status or '').strip(),
+                str(detalhe or '').strip(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao registrar log de e-mail: {e}')
+        return False
+
+
+def listar_logs_email(limite=100):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        if str(limite or '').strip().lower() == 'todos':
+            cursor.execute(
+                '''SELECT data_hora, tipo, assunto, destinatarios, status, detalhe
+                   FROM logs_email ORDER BY id DESC''',
+            )
+        else:
+            try:
+                limite_int = max(1, int(limite or 100))
+            except Exception:
+                limite_int = 100
+            cursor.execute(
+                '''SELECT data_hora, tipo, assunto, destinatarios, status, detalhe
+                   FROM logs_email ORDER BY id DESC LIMIT ?''',
+                (limite_int,),
+            )
+        linhas = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                'data_hora': row[0] or '',
+                'tipo': row[1] or '',
+                'assunto': row[2] or '',
+                'destinatarios': row[3] or '',
+                'status': row[4] or '',
+                'detalhe': row[5] or '',
+            }
+            for row in linhas
+        ]
+    except Exception as e:
+        print(f'Erro ao listar logs de e-mail: {e}')
+        return []
+
 
 # --- Notas Raspadas (Para a Dashboard) ---
 _callback_painel_notas = None
@@ -770,7 +906,7 @@ def salvar_nota_raspada(dados_nota):
             dados_nota.get('data_em', ''), dados_nota.get('valor', ''), dados_nota.get('sit_nfe', ''), 
             dados_nota.get('chave_nfe', ''), dados_nota.get('filial', ''), dados_nota.get('user_ins', ''),
             dados_nota.get('codigo_interno', ''), dados_nota.get('erro_importacao', ''), dados_nota.get('observacao_nfe', ''),
-            dados_nota.get('data_insercao') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            str(dados_nota.get('data_insercao') or '').strip(),
         ))
         conn.commit()
         conn.close()
@@ -833,12 +969,23 @@ def atualizar_nota_raspada(dados_nota, arquivar_automatico=False):
 
         conn = conectar_banco()
         cursor = conn.cursor()
-        params_base = (
+        params_base = [
             dados_nota.get('status', ''),
             dados_nota.get('codigo_interno', ''),
             dados_nota.get('erro_importacao', ''),
             dados_nota.get('observacao_nfe', ''),
-        )
+        ]
+        campos_update = [
+            'status = ?',
+            'codigo_interno = ?',
+            'erro_importacao = ?',
+            'observacao_nfe = ?',
+        ]
+        data_insercao = str(dados_nota.get('data_insercao') or '').strip()
+        if data_insercao:
+            campos_update.append('data_insercao = ?')
+            params_base.append(data_insercao)
+
         if chave:
             filtro = 'chave_nfe = ?'
             filtro_val = chave
@@ -850,24 +997,17 @@ def atualizar_nota_raspada(dados_nota, arquivar_automatico=False):
             filtro_val = num
 
         if arquivar_automatico:
-            cursor.execute(
-                f'''
-                UPDATE notas_raspadas
-                SET status = ?, codigo_interno = ?, erro_importacao = ?,
-                    observacao_nfe = ?, nfe_arquiva = ?
-                WHERE {filtro}
-                ''',
-                params_base + ('☑', filtro_val),
-            )
-        else:
-            cursor.execute(
-                f'''
-                UPDATE notas_raspadas
-                SET status = ?, codigo_interno = ?, erro_importacao = ?, observacao_nfe = ?
-                WHERE {filtro}
-                ''',
-                params_base + (filtro_val,),
-            )
+            campos_update.append('nfe_arquiva = ?')
+            params_base.append('☑')
+
+        cursor.execute(
+            f'''
+            UPDATE notas_raspadas
+            SET {", ".join(campos_update)}
+            WHERE {filtro}
+            ''',
+            tuple(params_base) + (filtro_val,),
+        )
         alterou = cursor.rowcount > 0
         conn.commit()
         conn.close()
@@ -880,10 +1020,20 @@ def atualizar_nota_raspada(dados_nota, arquivar_automatico=False):
 
 
 def marcar_nota_importada_painel(dados_nota):
-    """Atualiza status Importado no dashboard (upsert) e refresca a tela."""
+    """Atualiza status Importado no dashboard (upsert) sem data de inserção."""
     dados = dict(dados_nota or {})
     dados['status'] = 'Importado'
     dados['erro_importacao'] = dados.get('erro_importacao') or ''
+    dados.pop('data_insercao', None)
+    return salvar_ou_atualizar_nota_raspada(dados)
+
+
+def marcar_nota_finalizada_painel(dados_nota):
+    """Registra nota finalizada no ERP — grava data de inserção somente aqui."""
+    dados = dict(dados_nota or {})
+    dados['status'] = 'Importado'
+    dados['erro_importacao'] = dados.get('erro_importacao') or ''
+    dados['data_insercao'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return salvar_ou_atualizar_nota_raspada(dados)
 
 
@@ -958,34 +1108,36 @@ def obter_modelos_placa_string():
 
 
 def validar_modelo_placa(modelo):
-    """Valida máscara de placa: A = letra, 1 = número (texto inicial exato na NFe)."""
+    """Valida máscara de placa: A/a = letra, 1 = número (texto inicial exato na NFe)."""
+    from robo_web.utils import extrair_prefixo_mascara_placa
+
     texto = str(modelo or '').strip()
     if not texto:
         return False, 'Informe ao menos um modelo de placa.'
-    match = re.search(r'([A1][A1\-\s]{5,}[A1])', texto)
-    if not match:
+    prefixo, mascara = extrair_prefixo_mascara_placa(texto)
+    if not mascara:
         return False, (
             f"Formato inválido: '{texto}'\n\n"
-            'Use A para letras e 1 para números na placa.\n'
+            'Use A (ou a) para letras e 1 para números na placa.\n'
             'O texto antes da placa deve ser igual ao da observação da NFe.\n'
             'Exemplo: Placa : AAA-1A11'
         )
-    mascara = match.group(1)
     if re.search(r'[02-9]', mascara):
         return False, (
             f"Modelo inválido: '{texto}'\n\n"
-            'Na máscara da placa use apenas A (letra) e 1 (número).\n'
+            'Na máscara da placa use apenas A/a (letra) e 1 (número).\n'
             'Não use dígitos reais (0, 2, 3...).'
         )
-    if re.search(r'[a-z]', mascara):
+    if re.search(r'[b-zB-Z]', mascara):
         return False, (
             f"Modelo inválido: '{texto}'\n\n"
-            'Use A maiúsculo para representar letras na máscara.'
+            'Na máscara use A ou a para letras e 1 para números.\n'
+            'Letras reais (B, C, O, W...) não são permitidas na máscara.'
         )
-    if re.search(r'[^A1\-\s]', mascara):
+    if re.search(r'[^A1a\-\s]', mascara):
         return False, (
             f"Modelo inválido: '{texto}'\n\n"
-            'Na máscara só são permitidos A, 1, hífen e espaço.'
+            'Na máscara só são permitidos A, a, 1, hífen e espaço.'
         )
     return True, ''
 
@@ -1114,7 +1266,8 @@ def obter_modelos_km_string():
     return juntar_lista_modelos_km(modelos)
 
 def normalizar_placa_frota(placa):
-    return str(placa or '').replace('-', '').replace(' ', '').upper().strip()
+    """Placa da frota/NFe: só letras e números, tudo maiúsculo."""
+    return re.sub(r'[^A-Za-z0-9]', '', str(placa or '')).upper().strip()
 
 
 MSG_ERRO_PLACA_VEICULO = 'erro placa veiculo'
@@ -1266,11 +1419,15 @@ def _carregar_linhas_frota_erp(cursor=None):
     linhas = []
     for row in cursor.fetchall():
         if hasattr(row, 'keys'):
-            linhas.append(dict(row))
+            item = dict(row)
         elif colunas:
-            linhas.append(dict(zip(colunas, row)))
+            item = dict(zip(colunas, row))
         else:
-            linhas.append({})
+            item = {}
+        for coluna in ('placa',) + _COLUNAS_CARRETA_FROTA:
+            if item.get(coluna):
+                item[coluna] = normalizar_placa_frota(item[coluna])
+        linhas.append(item)
     if fechar:
         conn.close()
     return linhas
@@ -1355,6 +1512,54 @@ def resolver_placa_na_frota(placa, linhas=None):
         'cod_veiculo': cod,
         'coluna': coluna,
     }
+
+
+def _distancia_caracteres_placa(placa_a, placa_b):
+    """Quantidade de posições diferentes entre duas placas do mesmo tamanho."""
+    if len(placa_a) != len(placa_b):
+        return max(len(placa_a), len(placa_b))
+    return sum(1 for a, b in zip(placa_a, placa_b) if a != b)
+
+
+def buscar_placas_parecidas_na_frota(placa, linhas=None, max_distancia=1, limite=3):
+    """
+    Lista placas cadastradas no painel semelhantes à informada (ex.: L/I, O/0).
+    Retorna lista de dicts: placa, cod_veiculo, coluna.
+    """
+    placa_norm = normalizar_placa_frota(placa)
+    if not placa_norm:
+        return []
+
+    if linhas is None:
+        linhas = _carregar_linhas_frota_erp()
+
+    candidatos = []
+    vistos = set()
+    for row in linhas:
+        cod = str(row.get('codVeiculo') or '').strip()
+        if not cod:
+            continue
+        for coluna in ('placa',) + _COLUNAS_CARRETA_FROTA:
+            p = normalizar_placa_frota(row.get(coluna))
+            if not p or p == placa_norm or p in vistos:
+                continue
+            dist = _distancia_caracteres_placa(placa_norm, p)
+            prefixo_igual = (
+                len(placa_norm) >= 4
+                and len(p) >= 4
+                and placa_norm[:4] == p[:4]
+            )
+            if dist <= max_distancia or (prefixo_igual and dist <= 2):
+                candidatos.append({
+                    'placa': p,
+                    'cod_veiculo': cod,
+                    'coluna': coluna,
+                    'distancia': dist,
+                })
+                vistos.add(p)
+
+    candidatos.sort(key=lambda item: (item['distancia'], item['placa']))
+    return candidatos[:limite]
 
 
 def obter_cod_veiculo_por_placa(placa):
@@ -1546,9 +1751,21 @@ def obter_vinculo_veiculo(codigo_veiculo):
 # =======================================================
 # FUNÇÕES PARA CONFIGURAÇÃO DOS CÓDIGOS DE COMBUSTÍVEL
 # =======================================================
+def expandir_codigos_combustivel(valor):
+    """Separa códigos informados com vírgula ou ponto-e-vírgula (ex.: 7, 444)."""
+    codigos = []
+    vistos = set()
+    for parte in re.split(r'[,;]+', str(valor or '')):
+        codigo = parte.strip()
+        if codigo and codigo not in vistos:
+            vistos.add(codigo)
+            codigos.append(codigo)
+    return codigos
+
+
 def criar_tabela_config_combustiveis():
     import sqlite3
-    conn = sqlite3.connect('banco_nfe.db') 
+    conn = sqlite3.connect('banco_nfe.db')
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS config_combustiveis (
@@ -1559,18 +1776,21 @@ def criar_tabela_config_combustiveis():
             cod_s500 TEXT
         )
     ''')
-    
-    # Truque cirúrgico para adicionar a coluna do ARLA sem quebrar o banco antigo
     try:
         c.execute("ALTER TABLE config_combustiveis ADD COLUMN cod_arla TEXT")
     except sqlite3.OperationalError:
-        pass # Se der erro, é porque a coluna já existe
+        pass
 
     c.execute('SELECT count(*) FROM config_combustiveis')
     if c.fetchone()[0] == 0:
-        c.execute('INSERT INTO config_combustiveis (cod_etanol, cod_gasolina, cod_s10, cod_s500, cod_arla) VALUES ("", "", "", "", "")')
+        c.execute(
+            'INSERT INTO config_combustiveis '
+            '(cod_etanol, cod_gasolina, cod_s10, cod_s500, cod_arla) '
+            'VALUES ("", "", "", "", "")',
+        )
     conn.commit()
     conn.close()
+
 
 def salvar_codigos_combustiveis(etanol, gasolina, s10, s500, arla):
     criar_tabela_config_combustiveis()
@@ -1578,12 +1798,19 @@ def salvar_codigos_combustiveis(etanol, gasolina, s10, s500, arla):
     conn = sqlite3.connect('banco_nfe.db')
     c = conn.cursor()
     c.execute('''
-        UPDATE config_combustiveis 
+        UPDATE config_combustiveis
         SET cod_etanol = ?, cod_gasolina = ?, cod_s10 = ?, cod_s500 = ?, cod_arla = ?
         WHERE id = 1
-    ''', (etanol.strip(), gasolina.strip(), s10.strip(), s500.strip(), arla.strip()))
+    ''', (
+        str(etanol or '').strip(),
+        str(gasolina or '').strip(),
+        str(s10 or '').strip(),
+        str(s500 or '').strip(),
+        str(arla or '').strip(),
+    ))
     conn.commit()
     conn.close()
+
 
 def carregar_codigos_combustiveis():
     criar_tabela_config_combustiveis()
@@ -1591,14 +1818,23 @@ def carregar_codigos_combustiveis():
     try:
         conn = sqlite3.connect('banco_nfe.db')
         c = conn.cursor()
-        c.execute('SELECT cod_etanol, cod_gasolina, cod_s10, cod_s500, cod_arla FROM config_combustiveis WHERE id = 1')
+        c.execute(
+            'SELECT cod_etanol, cod_gasolina, cod_s10, cod_s500, cod_arla '
+            'FROM config_combustiveis WHERE id = 1',
+        )
         res = c.fetchone()
         conn.close()
         if res:
-            return {"etanol": res[0], "gasolina": res[1], "s10": res[2], "s500": res[3], "arla": res[4] if res[4] else ""}
-    except:
+            return {
+                'etanol': res[0] or '',
+                'gasolina': res[1] or '',
+                's10': res[2] or '',
+                's500': res[3] or '',
+                'arla': res[4] or '' if len(res) > 4 else '',
+            }
+    except Exception:
         pass
-    return {"etanol": "", "gasolina": "", "s10": "", "s500": "", "arla": ""}
+    return {'etanol': '', 'gasolina': '', 's10': '', 's500': '', 'arla': ''}
 
 def atualizar_estoque_nota(chave_nfe, valor_estoque):
     """Atualiza se a NFe vai para o estoque ou não"""
@@ -1998,7 +2234,7 @@ def carregar_codigo_grupo_item_padrao():
 
 def normalizar_placa_painel(texto):
     """Placa no painel: somente letras e números (sem ponto, espaço ou traço)."""
-    return re.sub(r'[^A-Za-z0-9]', '', str(texto or '')).upper()
+    return normalizar_placa_frota(texto)
 
 
 def normalizar_km_painel(texto):
@@ -2118,83 +2354,193 @@ def atualizar_painel_placa_km(chave_nfe='', num_nota='', placa=None, km=None):
         return False, str(e)
 
 
-def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota="", limite=None):
-    """Busca todas as notas e usa um atalho seguro: se não houver filtro, mostra tudo!"""
-    import sqlite3
+def nota_esta_arquivada(nota):
+    return '☑' in str((nota or {}).get('nfe_arquiva') or '')
+
+
+def status_exibicao_painel(nota):
+    if nota_esta_arquivada(nota):
+        return 'Arquivada'
+    return str((nota or {}).get('status') or '').strip()
+
+
+def _campo_data_eh_emissao(campo_data):
+    texto = str(campo_data or '').strip().lower()
+    return texto in ('emissao', 'data_em', 'data emissão nfe', 'data emissao nfe')
+
+
+def _data_nota_para_filtro_painel(nota, campo_data):
     from datetime import datetime
-    
+
+    if _campo_data_eh_emissao(campo_data):
+        data_str = str(nota.get('data_em') or '').strip()[:10]
+        if not data_str:
+            return None
+        try:
+            if '/' in data_str:
+                return datetime.strptime(data_str, '%d/%m/%Y').date()
+            if '-' in data_str:
+                return datetime.strptime(data_str, '%Y-%m-%d').date()
+        except ValueError:
+            return None
+        return None
+
+    dt = _parse_data_insercao(nota.get('data_insercao'))
+    return dt.date() if dt else None
+
+
+def obter_fornecedores_unicos_notas():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''SELECT DISTINCT TRIM(fornecedor) AS fornecedor
+               FROM notas_raspadas
+               WHERE TRIM(COALESCE(fornecedor, '')) != ''
+               ORDER BY fornecedor COLLATE NOCASE ASC''',
+        )
+        valores = [str(row[0]).strip() for row in cursor.fetchall() if row and row[0]]
+        conn.close()
+        return ['Todos'] + valores
+    except Exception as e:
+        print(f'Erro ao listar fornecedores: {e}')
+        return ['Todos']
+
+
+def buscar_fornecedores_por_nome(texto):
+    busca = str(texto or '').strip().lower()
+    if not busca or busca == 'todos':
+        return 'Todos'
+    candidatos = obter_fornecedores_unicos_notas()
+    exatos = [f for f in candidatos if f.lower() == busca]
+    if exatos:
+        return exatos[0]
+    comeca = [f for f in candidatos if f.lower().startswith(busca)]
+    if comeca:
+        return comeca[0]
+    contem = [f for f in candidatos if busca in f.lower()]
+    return contem[0] if contem else texto.strip()
+
+
+def buscar_grupos_itens_por_nome(texto):
+    busca = str(texto or '').strip().lower()
+    if not busca or busca == 'todos':
+        return 'Todos'
+    grupos = []
+    vistos = set()
+    for item in obter_itens_erp():
+        grupo = str(item.get('descGrupoImp') or '').strip()
+        chave = grupo.lower()
+        if not grupo or chave in vistos:
+            continue
+        if busca in chave:
+            vistos.add(chave)
+            grupos.append(grupo)
+    if not grupos:
+        return texto.strip()
+    grupos.sort(key=lambda g: (not g.lower().startswith(busca), g.lower()))
+    return grupos[0]
+
+
+def listar_notas_filtradas(
+    dt_ini='',
+    dt_fim='',
+    cod='',
+    status='Todos',
+    nota='',
+    fornecedor='Todos',
+    limite=None,
+    campo_data='insercao',
+):
+    """Filtra notas do painel. Por padrão usa data de inserção."""
+    from datetime import datetime
+
     try:
         conn = conectar_banco()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
-
-        # 🚀 CORREÇÃO AQUI: Mudamos de 'notas_fiscais' para 'notas_raspadas'
-        c.execute("SELECT * FROM notas_raspadas ORDER BY id DESC")
+        c.execute('SELECT * FROM notas_raspadas ORDER BY id DESC')
         todas_notas = [dict(row) for row in c.fetchall()]
         conn.close()
 
-        # ==========================================
-        # O GRANDE TRUQUE (ATALHO DE SEGURANÇA): 
-        # Se você não preencheu nada, ele devolve tudo na hora e ignora a filtragem!
-        # ==========================================
-        if not dt_ini and not dt_fim and not cod and not nota and status == "Todos":
-            if limite in (None, "", "Todos"):
-                return todas_notas
+        tem_filtro_data = bool(dt_ini or dt_fim)
+        fornecedor_filtro = str(fornecedor or 'Todos').strip()
+        tem_outros_filtros = (
+            bool(cod or nota)
+            or status not in ('', 'Todos')
+            or fornecedor_filtro not in ('', 'Todos')
+        )
+
+        if not tem_filtro_data and not tem_outros_filtros and status in ('', 'Todos'):
+            resultado = [
+                r for r in todas_notas if not nota_esta_arquivada(r)
+            ]
+            if limite in (None, '', 'Todos'):
+                return resultado
             try:
-                return todas_notas[:max(1, int(limite))]
+                return resultado[:max(1, int(limite))]
             except Exception:
-                return todas_notas
+                return resultado
+
+        try:
+            d_ini = (
+                datetime.strptime(dt_ini, '%d/%m/%Y').date()
+                if len(dt_ini) == 10 else datetime.min.date()
+            )
+        except ValueError:
+            d_ini = datetime.min.date()
+
+        try:
+            d_fim = (
+                datetime.strptime(dt_fim, '%d/%m/%Y').date()
+                if len(dt_fim) == 10 else datetime.max.date()
+            )
+        except ValueError:
+            d_fim = datetime.max.date()
 
         notas_filtradas = []
-
-        # Converte as datas digitadas na tela
-        try: d_ini = datetime.strptime(dt_ini, "%d/%m/%Y").date() if len(dt_ini) == 10 else datetime.min.date()
-        except: d_ini = datetime.min.date()
-            
-        try: d_fim = datetime.strptime(dt_fim, "%d/%m/%Y").date() if len(dt_fim) == 10 else datetime.max.date()
-        except: d_fim = datetime.max.date()
+        status_filtro = str(status or 'Todos').strip()
 
         for r in todas_notas:
-            # Filtro de Código
+            arquivada = nota_esta_arquivada(r)
+
+            if status_filtro == 'Arquivada':
+                if not arquivada:
+                    continue
+            elif arquivada:
+                continue
+
             val_cod = str(r.get('codigo_interno') or r.get('cod_interno') or '')
             if cod and cod.lower() not in val_cod.lower():
                 continue
 
-            # Filtro de Nota
             val_nota = str(r.get('num_nota') or r.get('nota') or '')
             if nota and nota.lower() not in val_nota.lower():
                 continue
 
-            # Filtro de Status
-            val_status = str(r.get('status') or '')
-            if status and status != "Todos" and status.upper() not in val_status.upper():
+            val_forn = str(r.get('fornecedor') or '')
+            if (
+                fornecedor_filtro
+                and fornecedor_filtro not in ('', 'Todos')
+                and fornecedor_filtro.lower() not in val_forn.lower()
+            ):
                 continue
 
-            # Filtro de Data Flexível
-            if d_ini != datetime.min.date() or d_fim != datetime.max.date():
-                data_str = str(r.get('data_em') or '').strip()[:10]
-                if not data_str:
-                    continue 
-                    
-                data_nota = None
-                try:
-                    if "/" in data_str: 
-                        data_nota = datetime.strptime(data_str, "%d/%m/%Y").date()
-                    elif "-" in data_str: 
-                        data_nota = datetime.strptime(data_str, "%Y-%m-%d").date()
-                except:
-                    pass 
-                    
-                if data_nota:
-                    if not (d_ini <= data_nota <= d_fim):
-                        continue
-                else:
+            if status_filtro not in ('', 'Todos', 'Arquivada'):
+                val_status = str(r.get('status') or '')
+                if status_filtro.upper() not in val_status.upper():
                     continue
 
-            # Se a nota passou em todos os filtros exigidos, ela entra na lista
+            if tem_filtro_data or d_ini != datetime.min.date() or d_fim != datetime.max.date():
+                data_nota = _data_nota_para_filtro_painel(r, campo_data)
+                if not data_nota:
+                    continue
+                if not (d_ini <= data_nota <= d_fim):
+                    continue
+
             notas_filtradas.append(r)
 
-        if limite in (None, "", "Todos"):
+        if limite in (None, '', 'Todos'):
             return notas_filtradas
         try:
             return notas_filtradas[:max(1, int(limite))]
@@ -2202,7 +2548,7 @@ def listar_notas_filtradas(dt_ini="", dt_fim="", cod="", status="Todos", nota=""
             return notas_filtradas
 
     except Exception as e:
-        print(f"Erro ao buscar/filtrar notas: {e}")
+        print(f'Erro ao buscar/filtrar notas: {e}')
         return []
 
 
@@ -2226,23 +2572,801 @@ def _parse_data_insercao(valor):
     return None
 
 
-def listar_notas_por_data_insercao(dt_ini="", dt_fim=""):
-    """Notas registradas no painel entre 00:00 da data inicial e 23:59 da final."""
+def formatar_data_insercao_exibicao(valor):
+    dt = _parse_data_insercao(valor)
+    if dt:
+        return dt.strftime('%d/%m/%Y %H:%M:%S')
+    return str(valor or '').strip()
+
+
+def listar_notas_por_periodo(dt_ini='', dt_fim='', campo_data='insercao'):
+    """Notas no período conforme campo escolhido (inserção ou emissão NFe)."""
     import log_service
+    from datetime import datetime
 
     inicio, fim = log_service.periodo_suporte(dt_ini, dt_fim)
     conn = conectar_banco()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM notas_raspadas ORDER BY data_insercao DESC, id DESC")
+    c.execute('SELECT * FROM notas_raspadas ORDER BY data_insercao DESC, id DESC')
     todas = [dict(row) for row in c.fetchall()]
     conn.close()
 
     filtradas = []
     for nota in todas:
+        if nota_esta_arquivada(nota):
+            continue
+
+        if _campo_data_eh_emissao(campo_data):
+            data_str = str(nota.get('data_em') or '').strip()[:10]
+            if not data_str:
+                continue
+            try:
+                if '/' in data_str:
+                    data_nota = datetime.strptime(data_str, '%d/%m/%Y').date()
+                elif '-' in data_str:
+                    data_nota = datetime.strptime(data_str, '%Y-%m-%d').date()
+                else:
+                    continue
+            except ValueError:
+                continue
+            if inicio.date() <= data_nota <= fim.date():
+                filtradas.append(nota)
+            continue
+
         dt_registro = _parse_data_insercao(nota.get('data_insercao'))
         if not dt_registro:
             continue
         if inicio <= dt_registro <= fim:
             filtradas.append(nota)
     return filtradas, inicio, fim
+
+
+def listar_notas_por_data_insercao(dt_ini='', dt_fim='', campo_data='insercao'):
+    return listar_notas_por_periodo(dt_ini, dt_fim, campo_data=campo_data)
+
+
+# ==========================================
+# TARIFAS BANCÁRIAS
+# ==========================================
+_callback_painel_tarifas = None
+
+
+def registrar_callback_painel_tarifas(callback):
+    """Registra função chamada após alteração no painel de tarifas."""
+    global _callback_painel_tarifas
+    _callback_painel_tarifas = callback
+
+
+def _notificar_painel_tarifas_alterado():
+    cb = _callback_painel_tarifas
+    if not cb:
+        return
+    try:
+        cb()
+    except Exception as e:
+        print(f"Aviso: falha ao atualizar painel de tarifas: {e}")
+
+
+def _normalizar_cnpj_tarifa(texto):
+    return re.sub(r'[^0-9]', '', str(texto or ''))
+
+
+def _parse_data_movimento_tarifa(valor):
+    texto = str(valor or '').strip()
+    if not texto:
+        return None
+    candidatos = (
+        ('%d/%m/%Y', texto[:10]),
+        ('%Y-%m-%d', texto[:10]),
+        ('%d/%m/%Y %H:%M:%S', texto[:19]),
+        ('%Y-%m-%d %H:%M:%S', texto[:19]),
+    )
+    for formato, trecho in candidatos:
+        try:
+            return datetime.strptime(trecho, formato)
+        except ValueError:
+            continue
+    return None
+
+
+def salvar_tarifa_bancaria(dados_tarifa):
+    """Insere uma tarifa bancária no painel."""
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO tarifas_bancarias (
+                cnpj, razao_social, agencia, conta, data_movimento, descricao, valor,
+                status, codigo_interno, erro_processamento, data_insercao
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            str(dados_tarifa.get('cnpj') or '').strip(),
+            str(dados_tarifa.get('razao_social') or '').strip(),
+            str(dados_tarifa.get('agencia') or '').strip(),
+            str(dados_tarifa.get('conta') or '').strip(),
+            str(dados_tarifa.get('data_movimento') or '').strip(),
+            str(dados_tarifa.get('descricao') or '').strip(),
+            str(dados_tarifa.get('valor') or '').strip(),
+            str(dados_tarifa.get('status') or 'Pendente').strip(),
+            str(dados_tarifa.get('codigo_interno') or '').strip(),
+            str(dados_tarifa.get('erro_processamento') or '').strip(),
+            dados_tarifa.get('data_insercao') or datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        ))
+        conn.commit()
+        conn.close()
+        _notificar_painel_tarifas_alterado()
+        return True
+    except Exception as e:
+        print(f"Erro ao salvar tarifa bancária: {e}")
+        return False
+
+
+def listar_tarifas_bancarias(
+    cnpj_filtro='',
+    data_ini='',
+    data_fim='',
+    status='Todos',
+):
+    """Lista tarifas com filtros opcionais."""
+    try:
+        conn = conectar_banco()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, cnpj, razao_social, agencia, conta, data_movimento, descricao,
+                   valor, status, codigo_interno, erro_processamento, data_insercao,
+                   data_processamento
+            FROM tarifas_bancarias
+            ORDER BY cnpj ASC, agencia ASC, conta ASC, data_movimento DESC, id DESC
+        ''')
+        tarifas = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        cnpj_filtro_norm = _normalizar_cnpj_tarifa(cnpj_filtro)
+        if cnpj_filtro_norm:
+            tarifas = [
+                t for t in tarifas
+                if cnpj_filtro_norm in _normalizar_cnpj_tarifa(t.get('cnpj'))
+            ]
+
+        status_norm = str(status or 'Todos').strip().upper()
+        if status_norm and status_norm != 'TODOS':
+            tarifas = [
+                t for t in tarifas
+                if str(t.get('status') or '').strip().upper() == status_norm
+            ]
+
+        if data_ini or data_fim:
+            inicio = _parse_data_movimento_tarifa(data_ini) if data_ini else None
+            fim = _parse_data_movimento_tarifa(data_fim) if data_fim else None
+            if fim:
+                fim = fim.replace(hour=23, minute=59, second=59)
+            filtradas = []
+            for tarifa in tarifas:
+                dt_mov = _parse_data_movimento_tarifa(tarifa.get('data_movimento'))
+                if not dt_mov:
+                    continue
+                if inicio and dt_mov < inicio:
+                    continue
+                if fim and dt_mov > fim:
+                    continue
+                filtradas.append(tarifa)
+            tarifas = filtradas
+
+        return tarifas
+    except Exception as e:
+        print(f"Erro ao listar tarifas bancárias: {e}")
+        return []
+
+
+def _formatar_cnpj_exibicao(cnpj):
+    digits = _normalizar_cnpj_tarifa(cnpj)
+    if len(digits) != 14:
+        return str(cnpj or '').strip()
+    return f'{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:14]}'
+
+
+def sincronizar_mapa_contas_sicredi(lista_contas):
+    """Atualiza o vínculo CNPJ/conta extraído do log do Sicredi."""
+    if not lista_contas:
+        return 0
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        total = 0
+        for item in lista_contas:
+            agencia = str(item.get('agencia') or '').strip()
+            conta = str(item.get('conta') or '').strip()
+            if not agencia or not conta:
+                continue
+            cnpj = _formatar_cnpj_exibicao(item.get('cnpj') or '')
+            razao = str(item.get('razao_social') or '').strip().upper()
+            cod_filial = str(item.get('cod_filial') or '').strip()
+            cod_conta_erp = str(item.get('cod_conta_erp') or '').strip()
+            cursor.execute(
+                '''INSERT INTO sicredi_mapa_contas (
+                       cnpj, razao_social, agencia, conta, ultima_atualizacao,
+                       cod_filial, cod_conta_erp
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(agencia, conta) DO UPDATE SET
+                       cnpj = excluded.cnpj,
+                       razao_social = CASE
+                           WHEN excluded.razao_social != '' THEN excluded.razao_social
+                           ELSE sicredi_mapa_contas.razao_social
+                       END,
+                       ultima_atualizacao = excluded.ultima_atualizacao,
+                       cod_filial = CASE
+                           WHEN excluded.cod_filial != '' THEN excluded.cod_filial
+                           ELSE sicredi_mapa_contas.cod_filial
+                       END,
+                       cod_conta_erp = CASE
+                           WHEN excluded.cod_conta_erp != '' THEN excluded.cod_conta_erp
+                           ELSE sicredi_mapa_contas.cod_conta_erp
+                       END''',
+                (cnpj, razao, agencia, conta, agora, cod_filial, cod_conta_erp),
+            )
+            if cod_filial:
+                _salvar_cnpj_filial(cnpj, cod_filial)
+            total += 1
+        conn.commit()
+        conn.close()
+        return total
+    except Exception as e:
+        print(f'Erro ao sincronizar mapa Sicredi: {e}')
+        return 0
+
+
+def obter_mapa_contas_sicredi():
+    try:
+        conn = conectar_banco()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            '''SELECT cnpj, razao_social, agencia, conta, ultima_atualizacao,
+                      data_arquivo_xls, cod_filial, cod_conta_erp
+               FROM sicredi_mapa_contas
+               ORDER BY cnpj ASC, agencia ASC, conta ASC''',
+        )
+        dados = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return dados
+    except Exception as e:
+        print(f'Erro ao ler mapa Sicredi: {e}')
+        return []
+
+
+def obter_mapa_contas_sicredi_dict():
+    mapa = {}
+    for item in obter_mapa_contas_sicredi():
+        chave = f"{item.get('agencia', '')}|{item.get('conta', '')}"
+        mapa[chave] = item
+    return mapa
+
+
+def _formatar_mtime_arquivo(caminho):
+    try:
+        mtime = os.path.getmtime(caminho)
+        return datetime.fromtimestamp(mtime).strftime('%d/%m/%Y %H:%M:%S')
+    except OSError:
+        return ''
+
+
+def obter_data_arquivo_conta_pasta(agencia, conta):
+    """Lê data/hora do XLS na pasta configurada, se existir."""
+    pasta = obter_pasta_tarifas_bancarias()
+    if not pasta:
+        return ''
+    agencia = str(agencia or '').strip()
+    conta = str(conta or '').strip().replace('_', '-')
+    for ext in ('.xls', '.xlsx'):
+        caminho = os.path.join(pasta, f'{agencia}_{conta}{ext}')
+        if os.path.isfile(caminho):
+            return _formatar_mtime_arquivo(caminho)
+    return ''
+
+
+def registrar_data_arquivo_conta(agencia, conta, caminho_arquivo=None, data_hora=None):
+    """Grava data/hora da última atualização do arquivo XLS da conta."""
+    agencia = str(agencia or '').strip()
+    conta = str(conta or '').strip()
+    if not agencia or not conta:
+        return False
+
+    if not data_hora and caminho_arquivo:
+        data_hora = _formatar_mtime_arquivo(caminho_arquivo)
+    data_hora = str(data_hora or '').strip()
+    if not data_hora:
+        return False
+
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''UPDATE sicredi_mapa_contas
+               SET data_arquivo_xls = ?
+               WHERE agencia = ? AND conta = ?''',
+            (data_hora, agencia, conta),
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                '''INSERT INTO sicredi_mapa_contas (
+                       cnpj, razao_social, agencia, conta, data_arquivo_xls, ultima_atualizacao
+                   ) VALUES ('', '', ?, ?, ?, ?)''',
+                (
+                    agencia,
+                    conta,
+                    data_hora,
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                ),
+            )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao registrar data do arquivo da conta: {e}')
+        return False
+
+
+def obter_tarifas_agrupadas_por_cnpj_conta(
+    cnpj_filtro='',
+    data_ini='',
+    data_fim='',
+    status='Todos',
+):
+    """Agrupa tarifas por CNPJ e conta; inclui contas do log mesmo sem tarifas."""
+    tarifas = listar_tarifas_bancarias(
+        cnpj_filtro=cnpj_filtro,
+        data_ini=data_ini,
+        data_fim=data_fim,
+        status=status,
+    )
+    mapa_contas = obter_mapa_contas_sicredi()
+    grupos = {}
+
+    cnpj_filtro_norm = _normalizar_cnpj_tarifa(cnpj_filtro)
+
+    for item in mapa_contas:
+        cnpj = str(item.get('cnpj') or '').strip() or '—'
+        if cnpj_filtro_norm and cnpj_filtro_norm not in _normalizar_cnpj_tarifa(cnpj):
+            continue
+        razao = str(item.get('razao_social') or '').strip()
+        agencia = str(item.get('agencia') or '').strip()
+        conta = str(item.get('conta') or '').strip()
+        chave_conta = f'{agencia}|{conta}'
+        grupo = grupos.setdefault(cnpj, {'cnpj': cnpj, 'razao_social': razao, 'contas': {}})
+        if razao and not grupo['razao_social']:
+            grupo['razao_social'] = razao
+        data_arquivo = str(item.get('data_arquivo_xls') or '').strip()
+        if not data_arquivo:
+            data_arquivo = obter_data_arquivo_conta_pasta(agencia, conta)
+        grupo['contas'].setdefault(chave_conta, {
+            'agencia': agencia,
+            'conta': conta,
+            'data_arquivo_xls': data_arquivo,
+            'tarifas': [],
+        })
+
+    for tarifa in tarifas:
+        cnpj = str(tarifa.get('cnpj') or '').strip() or '—'
+        razao = str(tarifa.get('razao_social') or '').strip()
+        agencia = str(tarifa.get('agencia') or '').strip()
+        conta = str(tarifa.get('conta') or '').strip()
+        chave_conta = f'{agencia}|{conta}'
+
+        grupo = grupos.setdefault(cnpj, {'cnpj': cnpj, 'razao_social': razao, 'contas': {}})
+        if razao and not grupo['razao_social']:
+            grupo['razao_social'] = razao
+
+        conta_item = grupo['contas'].setdefault(chave_conta, {
+            'agencia': agencia,
+            'conta': conta,
+            'data_arquivo_xls': '',
+            'tarifas': [],
+        })
+        if not conta_item.get('data_arquivo_xls'):
+            conta_item['data_arquivo_xls'] = obter_data_arquivo_conta_pasta(agencia, conta)
+        conta_item['tarifas'].append(tarifa)
+
+    for grupo in grupos.values():
+        for conta_item in grupo['contas'].values():
+            if not conta_item.get('data_arquivo_xls'):
+                conta_item['data_arquivo_xls'] = obter_data_arquivo_conta_pasta(
+                    conta_item.get('agencia'),
+                    conta_item.get('conta'),
+                )
+
+    resultado = []
+    for cnpj in sorted(grupos.keys()):
+        grupo = grupos[cnpj]
+        contas = []
+        for chave in sorted(grupo['contas'].keys()):
+            contas.append(grupo['contas'][chave])
+        resultado.append({
+            'cnpj': grupo['cnpj'],
+            'razao_social': grupo['razao_social'],
+            'contas': contas,
+        })
+    return resultado
+
+
+def obter_ultima_atualizacao_tarifas():
+    """Retorna a data/hora da tarifa mais recente inserida no painel."""
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT MAX(data_insercao) FROM tarifas_bancarias',
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''
+
+
+def contar_tarifas_bancarias():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM tarifas_bancarias')
+        total = cursor.fetchone()[0]
+        conn.close()
+        return int(total or 0)
+    except Exception:
+        return 0
+
+
+_CHAVE_PASTA_TARIFAS = 'pasta_tarifas_bancarias'
+_CHAVE_LOG_SICREDI = 'arquivo_log_sicredi'
+_CHAVE_ULTIMA_IMPORT_TARIFAS = 'ultima_importacao_tarifas'
+
+
+def salvar_arquivo_log_sicredi(caminho):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            '''INSERT INTO config_sistema (chave, valor)
+               VALUES (?, ?)
+               ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor''',
+            (_CHAVE_LOG_SICREDI, os.path.abspath(str(caminho or '').strip())),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao salvar log Sicredi: {e}')
+        return False
+
+
+def obter_arquivo_log_sicredi():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            'SELECT valor FROM config_sistema WHERE chave = ?',
+            (_CHAVE_LOG_SICREDI,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''
+
+
+def salvar_pasta_tarifas_bancarias(pasta):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            '''INSERT INTO config_sistema (chave, valor)
+               VALUES (?, ?)
+               ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor''',
+            (_CHAVE_PASTA_TARIFAS, os.path.abspath(str(pasta or '').strip())),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao salvar pasta de tarifas: {e}')
+        return False
+
+
+def obter_pasta_tarifas_bancarias():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            'SELECT valor FROM config_sistema WHERE chave = ?',
+            (_CHAVE_PASTA_TARIFAS,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''
+
+
+def registrar_ultima_importacao_tarifas(data_hora=None):
+    if data_hora is None:
+        data_hora = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            '''INSERT INTO config_sistema (chave, valor)
+               VALUES (?, ?)
+               ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor''',
+            (_CHAVE_ULTIMA_IMPORT_TARIFAS, str(data_hora)),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao registrar última importação de tarifas: {e}')
+        return False
+
+
+def obter_ultima_importacao_tarifas():
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            'SELECT valor FROM config_sistema WHERE chave = ?',
+            (_CHAVE_ULTIMA_IMPORT_TARIFAS,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''
+
+
+def _tarifa_bancaria_ja_existe(cursor, dados):
+    cursor.execute(
+        '''SELECT id FROM tarifas_bancarias
+           WHERE cnpj = ? AND agencia = ? AND conta = ?
+             AND data_movimento = ? AND descricao = ? AND valor = ?
+           LIMIT 1''',
+        (
+            str(dados.get('cnpj') or '').strip(),
+            str(dados.get('agencia') or '').strip(),
+            str(dados.get('conta') or '').strip(),
+            str(dados.get('data_movimento') or '').strip(),
+            str(dados.get('descricao') or '').strip(),
+            str(dados.get('valor') or '').strip(),
+        ),
+    )
+    return cursor.fetchone() is not None
+
+
+def importar_tarifas_bancarias_lote(lista_tarifas, notificar=True):
+    """Grava tarifas importadas ignorando duplicatas."""
+    novas = 0
+    duplicadas = 0
+    if not lista_tarifas:
+        return novas, duplicadas
+
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        for dados in lista_tarifas:
+            if _tarifa_bancaria_ja_existe(cursor, dados):
+                duplicadas += 1
+                continue
+            cursor.execute('''
+                INSERT INTO tarifas_bancarias (
+                    cnpj, razao_social, agencia, conta, data_movimento, descricao, valor,
+                    status, codigo_interno, erro_processamento, data_insercao
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                str(dados.get('cnpj') or '').strip(),
+                str(dados.get('razao_social') or '').strip(),
+                str(dados.get('agencia') or '').strip(),
+                str(dados.get('conta') or '').strip(),
+                str(dados.get('data_movimento') or '').strip(),
+                str(dados.get('descricao') or '').strip(),
+                str(dados.get('valor') or '').strip(),
+                str(dados.get('status') or 'Pendente').strip(),
+                str(dados.get('codigo_interno') or '').strip(),
+                str(dados.get('erro_processamento') or '').strip(),
+                dados.get('data_insercao') or agora,
+            ))
+            novas += 1
+
+        conn.commit()
+        conn.close()
+        if novas and notificar:
+            _notificar_painel_tarifas_alterado()
+        return novas, duplicadas
+    except Exception as e:
+        print(f'Erro ao importar tarifas em lote: {e}')
+        return novas, duplicadas
+
+
+_CHAVE_COD_FORNECEDOR_SICREDI = 'cod_fornecedor_sicredi'
+_CHAVE_COD_GRUPO_ITEM_TARIFA = 'cod_grupo_item_tarifa'
+_CHAVE_NOME_ITEM_TARIFA = 'nome_item_tarifa_padrao'
+
+
+def _salvar_config_sistema(chave, valor):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            '''INSERT INTO config_sistema (chave, valor)
+               VALUES (?, ?)
+               ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor''',
+            (chave, str(valor or '').strip()),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f'Erro ao salvar config {chave}: {e}')
+        return False
+
+
+def _obter_config_sistema(chave, padrao=''):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        _garantir_tabela_config_sistema(cursor)
+        cursor.execute(
+            'SELECT valor FROM config_sistema WHERE chave = ?',
+            (chave,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return str(row[0]).strip()
+    except Exception:
+        pass
+    return str(padrao or '').strip()
+
+
+def salvar_config_tarifa_erp(
+    cod_fornecedor_sicredi=None,
+    cod_grupo_item_tarifa=None,
+    nome_item_tarifa=None,
+):
+    ok = True
+    campos = {
+        _CHAVE_COD_FORNECEDOR_SICREDI: cod_fornecedor_sicredi,
+        _CHAVE_COD_GRUPO_ITEM_TARIFA: cod_grupo_item_tarifa,
+        _CHAVE_NOME_ITEM_TARIFA: nome_item_tarifa,
+    }
+    for chave, valor in campos.items():
+        if valor is not None:
+            ok = _salvar_config_sistema(chave, valor) and ok
+    return ok
+
+
+def obter_config_tarifa_erp():
+    return {
+        'cod_fornecedor_sicredi': _obter_config_sistema(
+            _CHAVE_COD_FORNECEDOR_SICREDI, '640',
+        ),
+        'cod_grupo_item_tarifa': _obter_config_sistema(
+            _CHAVE_COD_GRUPO_ITEM_TARIFA, '44',
+        ),
+        'nome_item_tarifa_padrao': _obter_config_sistema(
+            _CHAVE_NOME_ITEM_TARIFA, '',
+        ),
+    }
+
+
+def atualizar_status_tarifa_bancaria(
+    tarifa_id,
+    status,
+    codigo_interno='',
+    erro_processamento='',
+):
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            '''UPDATE tarifas_bancarias
+               SET status = ?, codigo_interno = ?, erro_processamento = ?,
+                   data_processamento = ?
+               WHERE id = ?''',
+            (
+                str(status or '').strip(),
+                str(codigo_interno or '').strip(),
+                str(erro_processamento or '').strip(),
+                agora,
+                int(tarifa_id),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        _notificar_painel_tarifas_alterado()
+        return cursor.rowcount > 0
+    except Exception as e:
+        print(f'Erro ao atualizar tarifa {tarifa_id}: {e}')
+        return False
+
+
+def _salvar_cnpj_filial(cnpj, cod_filial):
+    digits = _normalizar_cnpj_tarifa(cnpj)
+    cod = str(cod_filial or '').strip()
+    if len(digits) != 14 or not cod:
+        return
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            '''INSERT INTO sicredi_cnpj_filial (cnpj_digits, cod_filial, atualizado_em)
+               VALUES (?, ?, ?)
+               ON CONFLICT(cnpj_digits) DO UPDATE SET
+                   cod_filial = excluded.cod_filial,
+                   atualizado_em = excluded.atualizado_em''',
+            (digits, cod, agora),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f'Erro ao salvar filial do CNPJ {cnpj}: {e}')
+
+
+def obter_cod_filial_por_cnpj(cnpj):
+    digits = _normalizar_cnpj_tarifa(cnpj)
+    if len(digits) != 14:
+        return ''
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT cod_filial FROM sicredi_cnpj_filial WHERE cnpj_digits = ?',
+            (digits,),
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            conn.close()
+            return str(row[0]).strip()
+        cursor.execute(
+            '''SELECT cod_filial FROM sicredi_mapa_contas
+               WHERE REPLACE(REPLACE(REPLACE(cnpj, '.', ''), '/', ''), '-', '') = ?
+                 AND TRIM(cod_filial) != ''
+               LIMIT 1''',
+            (digits,),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''
+
+
+def obter_cod_conta_erp_por_conta(agencia, conta):
+    agencia = str(agencia or '').strip()
+    conta = str(conta or '').strip().replace('_', '-')
+    if not agencia or not conta:
+        return ''
+    try:
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''SELECT cod_conta_erp FROM sicredi_mapa_contas
+               WHERE agencia = ? AND conta = ? AND TRIM(cod_conta_erp) != ''
+               LIMIT 1''',
+            (agencia, conta),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]).strip() if row and row[0] else ''
+    except Exception:
+        return ''

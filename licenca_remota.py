@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
+import http_ssl
 import database_setup as db
 
 # Configuração do vendedor (copie licenca_config.example.py -> licenca_config.py)
@@ -174,7 +175,7 @@ def _gravar_json_github(caminho, dados, mensagem_commit, branch=None):
         headers=_headers_api(),
         method='PUT',
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with http_ssl.urlopen(req, timeout=30) as resp:
         if resp.status in (200, 201):
             return True, 'Salvo no GitHub.'
     return False, 'Falha ao salvar no GitHub.'
@@ -188,7 +189,7 @@ def _ler_arquivo_licenca(caminho, branch):
     )
     req = urllib.request.Request(url, headers=_headers_api(), method='GET')
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with http_ssl.urlopen(req, timeout=20) as resp:
             meta = json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -204,7 +205,7 @@ def _info_repositorio():
     url = f'https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}'
     req = urllib.request.Request(url, headers=_headers_api(), method='GET')
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with http_ssl.urlopen(req, timeout=20) as resp:
             return json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -229,7 +230,7 @@ def _obter_sha_existente(caminho, branch):
     )
     req = urllib.request.Request(url, headers=_headers_api(), method='GET')
     try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with http_ssl.urlopen(req, timeout=25) as resp:
             dados = json.loads(resp.read().decode('utf-8'))
             return dados.get('sha')
     except urllib.error.HTTPError as e:
@@ -258,7 +259,7 @@ def _apagar_arquivo_github(caminho, branch):
         headers=_headers_api(),
         method='DELETE',
     )
-    with urllib.request.urlopen(req, timeout=25):
+    with http_ssl.urlopen(req, timeout=25):
         pass
 
 
@@ -438,7 +439,7 @@ def _buscar_licenca_por_instalacao_id(instalacao_id, branch):
     )
     req = urllib.request.Request(url, headers=_headers_api(), method='GET')
     try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with http_ssl.urlopen(req, timeout=25) as resp:
             itens = json.loads(resp.read().decode('utf-8'))
     except Exception:
         return None, None
@@ -529,7 +530,7 @@ def listar_todas_licencas():
         f'/contents/{_caminho_url(PASTA_LICENCAS)}?ref={branch}'
     )
     req = urllib.request.Request(url, headers=_headers_api(), method='GET')
-    with urllib.request.urlopen(req, timeout=25) as resp:
+    with http_ssl.urlopen(req, timeout=25) as resp:
         itens = json.loads(resp.read().decode('utf-8'))
     licencas = []
     for item in sorted(itens, key=lambda x: x.get('name', '')):
@@ -586,6 +587,43 @@ def excluir_licenca_arquivo(nome_arquivo):
         return False, f'Erro ao excluir no GitHub (HTTP {e.code}).'
     except Exception as e:
         return False, str(e)
+
+
+def ler_licenca_arquivo(nome_arquivo):
+    """Lê o JSON da licença no GitHub para edição no painel."""
+    nome = str(nome_arquivo or '').strip()
+    if not nome.endswith('.json'):
+        raise ValueError('Nome de arquivo inválido.')
+    if not licenca_configurada():
+        raise RuntimeError('Licença remota não configurada.')
+    branch = _branch_ativa()
+    caminho = _caminho_arquivo_por_nome(nome)
+    dados = _ler_arquivo_licenca(caminho, branch)
+    if not dados:
+        raise FileNotFoundError(f'Arquivo não encontrado: {nome}')
+    return dados
+
+
+def salvar_licenca_arquivo(nome_arquivo, dados):
+    """Grava o JSON completo da licença no GitHub (edição pelo painel)."""
+    nome = str(nome_arquivo or '').strip()
+    if not nome.endswith('.json'):
+        return False, 'Nome de arquivo inválido.'
+    if not isinstance(dados, dict):
+        return False, 'Conteúdo da licença inválido.'
+    if not licenca_configurada():
+        return False, 'Licença remota não configurada.'
+    branch = _branch_ativa()
+    caminho = _caminho_arquivo_por_nome(nome)
+    if not _ler_arquivo_licenca(caminho, branch):
+        return False, f'Arquivo não encontrado: {nome}'
+    razao = dados.get('razao_social', nome)
+    return _salvar_json_github(
+        caminho,
+        dados,
+        f'Painel: editar {razao}',
+        branch,
+    )
 
 
 def definir_ativado_arquivo(nome_arquivo, ativado):

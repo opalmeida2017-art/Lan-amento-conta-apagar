@@ -1,6 +1,9 @@
 import customtkinter as ctk
 from tkinter import ttk, messagebox
 import database_setup as db
+from ui.combo_busca_grupo import ComboBuscaGrupo
+from ui.aba_logs import AbaLogs
+from ui.entry_data_calendario import EntryDataComCalendario
 from ui.relatorio_execucao import abrir_relatorio_pdf, salvar_relatorio_excel
 
 class AbaExecucao(ctk.CTkFrame):
@@ -77,13 +80,19 @@ class AbaExecucao(ctk.CTkFrame):
         self.frame_filtros.grid(row=0, column=0, pady=(10, 0), padx=10, sticky="ew")
         self.frame_filtros.bind("<Configure>", self._reorganizar_filtros)
 
-        self.lbl_filtro_dt_ini = ctk.CTkLabel(self.frame_filtros, text="Data Emissão:")
-        self.filtro_dt_ini = ctk.CTkEntry(self.frame_filtros, width=100, placeholder_text="DD/MM/YYYY")
-        self.filtro_dt_ini.bind("<KeyRelease>", self.formatar_data_teclado)
-        
+        self.lbl_filtro_tipo_data = ctk.CTkLabel(self.frame_filtros, text="Filtrar por:")
+        self.filtro_tipo_data = ctk.CTkComboBox(
+            self.frame_filtros,
+            width=150,
+            values=["Data Inserção", "Data Emissão NFe"],
+        )
+        self.filtro_tipo_data.set("Data Inserção")
+
+        self.lbl_filtro_dt_ini = ctk.CTkLabel(self.frame_filtros, text="De:")
+        self.filtro_dt_ini = EntryDataComCalendario(self.frame_filtros, width=100)
+
         self.lbl_filtro_dt_fim = ctk.CTkLabel(self.frame_filtros, text="até")
-        self.filtro_dt_fim = ctk.CTkEntry(self.frame_filtros, width=100, placeholder_text="DD/MM/YYYY")
-        self.filtro_dt_fim.bind("<KeyRelease>", self.formatar_data_teclado)
+        self.filtro_dt_fim = EntryDataComCalendario(self.frame_filtros, width=100)
 
         self.lbl_filtro_cod = ctk.CTkLabel(self.frame_filtros, text="Cód. Int:")
         self.filtro_cod = ctk.CTkEntry(self.frame_filtros, width=70)
@@ -91,12 +100,23 @@ class AbaExecucao(ctk.CTkFrame):
         self.lbl_filtro_nota = ctk.CTkLabel(self.frame_filtros, text="Nº Nota:")
         self.filtro_nota = ctk.CTkEntry(self.frame_filtros, width=70)
 
+        self.lbl_filtro_fornecedor = ctk.CTkLabel(self.frame_filtros, text="Fornecedor:")
+        self._fornecedores_disponiveis = self.controller.obter_fornecedores_unicos()
+        self.filtro_fornecedor = ComboBuscaGrupo(
+            self.frame_filtros,
+            self._fornecedores_disponiveis,
+            width=200,
+            valor_inicial="Todos",
+            on_buscar_enter=self.controller.buscar_fornecedor_por_nome,
+            on_enter_acao=self.buscar_tabela_dashboard,
+        )
+
         self.lbl_filtro_status = ctk.CTkLabel(self.frame_filtros, text="Status:")
         self.filtro_status = ctk.CTkComboBox(
             self.frame_filtros, width=110,
-            values=["Todos", "Importado", "Processado", "Erro", "Processando"],
+            values=["Erro", "Importado", "Processado", "Processando", "Arquivada", "Todos"],
         )
-        self.filtro_status.set("Todos")
+        self.filtro_status.set("Erro")
 
         self.lbl_filtro_limite = ctk.CTkLabel(self.frame_filtros, text="Limite:")
         self.filtro_limite = ctk.CTkComboBox(
@@ -110,6 +130,14 @@ class AbaExecucao(ctk.CTkFrame):
         self.btn_limpar = ctk.CTkButton(
             self.frame_filtros, text="Limpar", width=60, fg_color="gray",
             command=self.limpar_filtros_dashboard,
+        )
+        self.btn_logs_robo = ctk.CTkButton(
+            self.frame_filtros,
+            text="📋 Logs NFe",
+            width=130,
+            fg_color="#1565c0",
+            hover_color="#0d47a1",
+            command=self._abrir_logs_robo,
         )
         self.lbl_imprimir_relatorio = ctk.CTkLabel(
             self.frame_filtros,
@@ -160,7 +188,7 @@ class AbaExecucao(ctk.CTkFrame):
 
         colunas = (
             "insercao", "cod_interno", "status", "forn", "nota", "placa", "km",
-            "data", "valor", "sit_nfe", "chave", "filial", "user", "erro",
+            "data", "valor", "sit_nfe", "filial", "user", "erro",
             "observacao", "estoque", "arquiva",
         )
         self.tabela_nf = ttk.Treeview(frame_tabela, columns=colunas, show="headings", height=8)
@@ -183,7 +211,6 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.heading("data", text="Data Em.")
         self.tabela_nf.heading("valor", text="Valor")
         self.tabela_nf.heading("sit_nfe", text="Sit. NFe")
-        self.tabela_nf.heading("chave", text="Chave NFe")
         self.tabela_nf.heading("filial", text="Filial")
         self.tabela_nf.heading("user", text="Usuário Inserção")
         self.tabela_nf.heading("erro", text="Erro Importação")
@@ -191,7 +218,7 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.heading("estoque", text="NFe p/ Estoque")
         self.tabela_nf.heading("arquiva", text="Arquiva")
 
-        self.tabela_nf.column("insercao", width=132, anchor="center")
+        self.tabela_nf.column("insercao", width=155, anchor="center")
         self.tabela_nf.column("cod_interno", width=82, anchor="center")
         self.tabela_nf.column("status", width=84, anchor="center")
         self.tabela_nf.column("forn", width=180, anchor="w")
@@ -201,7 +228,6 @@ class AbaExecucao(ctk.CTkFrame):
         self.tabela_nf.column("data", width=88, anchor="center")
         self.tabela_nf.column("valor", width=92, anchor="e")
         self.tabela_nf.column("sit_nfe", width=84, anchor="center")
-        self.tabela_nf.column("chave", width=230, anchor="center")
         self.tabela_nf.column("filial", width=64, anchor="center")
         self.tabela_nf.column("user", width=96, anchor="center")
         self.tabela_nf.column("erro", width=210, anchor="w")
@@ -266,13 +292,15 @@ class AbaExecucao(ctk.CTkFrame):
                 largura = 0
 
         widgets = [
+            self.lbl_filtro_tipo_data, self.filtro_tipo_data,
             self.lbl_filtro_dt_ini, self.filtro_dt_ini,
             self.lbl_filtro_dt_fim, self.filtro_dt_fim,
             self.lbl_filtro_cod, self.filtro_cod,
             self.lbl_filtro_nota, self.filtro_nota,
+            self.lbl_filtro_fornecedor, self.filtro_fornecedor,
             self.lbl_filtro_status, self.filtro_status,
             self.lbl_filtro_limite, self.filtro_limite,
-            self.btn_filtrar, self.btn_limpar, self.lbl_imprimir_relatorio,
+            self.btn_filtrar, self.btn_limpar, self.btn_logs_robo, self.lbl_imprimir_relatorio,
         ]
         for widget in widgets:
             widget.grid_forget()
@@ -281,47 +309,62 @@ class AbaExecucao(ctk.CTkFrame):
             self.frame_filtros.grid_columnconfigure(col, weight=0)
 
         if largura >= 1240:
-            self._grid_filtro(self.lbl_filtro_dt_ini, self.filtro_dt_ini, 0, 0)
-            self._grid_filtro(self.lbl_filtro_dt_fim, self.filtro_dt_fim, 0, 2)
-            self._grid_filtro(self.lbl_filtro_cod, self.filtro_cod, 0, 4)
-            self._grid_filtro(self.lbl_filtro_nota, self.filtro_nota, 0, 6)
-            self._grid_filtro(self.lbl_filtro_status, self.filtro_status, 0, 8)
-            self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 0, 10)
-            self.btn_filtrar.grid(row=0, column=12, padx=(15, 5), pady=8, sticky="ew")
-            self.btn_limpar.grid(row=0, column=13, padx=5, pady=8, sticky="ew")
-            self.frame_filtros.grid_columnconfigure(14, weight=1)
+            self._grid_filtro(self.lbl_filtro_tipo_data, self.filtro_tipo_data, 0, 0)
+            self._grid_filtro(self.lbl_filtro_dt_ini, self.filtro_dt_ini, 0, 2)
+            self._grid_filtro(self.lbl_filtro_dt_fim, self.filtro_dt_fim, 0, 4)
+            self._grid_filtro(self.lbl_filtro_cod, self.filtro_cod, 0, 6)
+            self._grid_filtro(self.lbl_filtro_nota, self.filtro_nota, 0, 8)
+            self.lbl_filtro_fornecedor.grid(row=1, column=0, padx=(10, 2), pady=8, sticky="w")
+            self.filtro_fornecedor.grid(row=1, column=1, columnspan=3, padx=2, pady=8, sticky="ew")
+            self._grid_filtro(self.lbl_filtro_status, self.filtro_status, 1, 4)
+            self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 1, 6)
+            self.btn_filtrar.grid(row=1, column=8, padx=(15, 5), pady=8, sticky="ew")
+            self.btn_limpar.grid(row=1, column=9, padx=5, pady=8, sticky="ew")
+            self.btn_logs_robo.grid(row=0, column=11, padx=(10, 5), pady=8, sticky="e")
+            self.frame_filtros.grid_columnconfigure(10, weight=1)
             self.lbl_imprimir_relatorio.grid(
-                row=0, column=15, padx=(10, 10), pady=8, sticky="e",
+                row=1, column=11, padx=(10, 10), pady=8, sticky="e",
             )
             return
 
         if largura >= 840:
-            self._grid_filtro(self.lbl_filtro_dt_ini, self.filtro_dt_ini, 0, 0)
-            self._grid_filtro(self.lbl_filtro_dt_fim, self.filtro_dt_fim, 0, 2)
-            self._grid_filtro(self.lbl_filtro_cod, self.filtro_cod, 0, 4)
-            self._grid_filtro(self.lbl_filtro_nota, self.filtro_nota, 1, 0)
-            self._grid_filtro(self.lbl_filtro_status, self.filtro_status, 1, 2)
-            self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 1, 4)
-            self.btn_filtrar.grid(row=1, column=6, padx=(15, 5), pady=8, sticky="ew")
-            self.btn_limpar.grid(row=1, column=7, padx=5, pady=8, sticky="ew")
-            self.frame_filtros.grid_columnconfigure(8, weight=1)
+            self._grid_filtro(self.lbl_filtro_tipo_data, self.filtro_tipo_data, 0, 0)
+            self._grid_filtro(self.lbl_filtro_dt_ini, self.filtro_dt_ini, 0, 2)
+            self._grid_filtro(self.lbl_filtro_dt_fim, self.filtro_dt_fim, 0, 4)
+            self._grid_filtro(self.lbl_filtro_cod, self.filtro_cod, 1, 0)
+            self._grid_filtro(self.lbl_filtro_nota, self.filtro_nota, 1, 2)
+            self.lbl_filtro_fornecedor.grid(row=1, column=4, padx=(15, 2), pady=8, sticky="w")
+            self.filtro_fornecedor.grid(row=1, column=5, columnspan=2, padx=2, pady=8, sticky="ew")
+            self._grid_filtro(self.lbl_filtro_status, self.filtro_status, 2, 0)
+            self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 2, 2)
+            self.btn_filtrar.grid(row=2, column=4, padx=(15, 5), pady=8, sticky="ew")
+            self.btn_limpar.grid(row=2, column=5, padx=5, pady=8, sticky="ew")
+            self.btn_logs_robo.grid(row=1, column=7, padx=(10, 5), pady=8, sticky="e")
+            self.frame_filtros.grid_columnconfigure(6, weight=1)
             self.lbl_imprimir_relatorio.grid(
-                row=1, column=9, padx=(10, 10), pady=8, sticky="e",
+                row=2, column=7, padx=(10, 10), pady=8, sticky="e",
             )
             return
 
-        self._grid_filtro(self.lbl_filtro_dt_ini, self.filtro_dt_ini, 0, 0)
-        self._grid_filtro(self.lbl_filtro_dt_fim, self.filtro_dt_fim, 0, 2)
-        self._grid_filtro(self.lbl_filtro_cod, self.filtro_cod, 1, 0)
-        self._grid_filtro(self.lbl_filtro_nota, self.filtro_nota, 1, 2)
-        self._grid_filtro(self.lbl_filtro_status, self.filtro_status, 2, 0)
-        self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 2, 2)
-        self.btn_filtrar.grid(row=3, column=0, padx=(10, 5), pady=8, sticky="ew")
-        self.btn_limpar.grid(row=3, column=1, padx=5, pady=8, sticky="ew")
+        self._grid_filtro(self.lbl_filtro_tipo_data, self.filtro_tipo_data, 0, 0)
+        self._grid_filtro(self.lbl_filtro_dt_ini, self.filtro_dt_ini, 0, 2)
+        self._grid_filtro(self.lbl_filtro_dt_fim, self.filtro_dt_fim, 1, 0)
+        self._grid_filtro(self.lbl_filtro_cod, self.filtro_cod, 1, 2)
+        self._grid_filtro(self.lbl_filtro_nota, self.filtro_nota, 2, 0)
+        self.lbl_filtro_fornecedor.grid(row=2, column=2, padx=(10, 2), pady=8, sticky="w")
+        self.filtro_fornecedor.grid(row=2, column=3, columnspan=2, padx=2, pady=8, sticky="ew")
+        self._grid_filtro(self.lbl_filtro_status, self.filtro_status, 3, 0)
+        self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 3, 2)
+        self.btn_filtrar.grid(row=4, column=0, padx=(10, 5), pady=8, sticky="ew")
+        self.btn_limpar.grid(row=4, column=1, padx=5, pady=8, sticky="ew")
+        self.btn_logs_robo.grid(row=3, column=2, columnspan=3, padx=(10, 5), pady=8, sticky="e")
         self.frame_filtros.grid_columnconfigure(4, weight=1)
         self.lbl_imprimir_relatorio.grid(
-            row=3, column=2, columnspan=3, padx=(10, 10), pady=(0, 8), sticky="e",
+            row=4, column=2, columnspan=3, padx=(10, 10), pady=(0, 8), sticky="e",
         )
+
+    def _abrir_logs_robo(self):
+        AbaLogs.abrir_popup(self)
 
     def chamar_robo(self):
         self.controller.iniciar_robo()
@@ -401,13 +444,20 @@ class AbaExecucao(ctk.CTkFrame):
         self.wait_window(popup)
         return resposta["valor"]
 
+    def _campo_data_filtro(self):
+        escolha = self.filtro_tipo_data.get().strip() if hasattr(self, 'filtro_tipo_data') else ''
+        if escolha == 'Data Emissão NFe':
+            return 'emissao'
+        return 'insercao'
+
     def _resumo_filtros_relatorio(self):
         return {
-            "Inserção": "Mais recentes primeiro",
-            "Data Emissão Inicial": self.filtro_dt_ini.get().strip(),
-            "Data Emissão Final": self.filtro_dt_fim.get().strip(),
+            "Critério de data": self.filtro_tipo_data.get().strip(),
+            "Data Inicial": self.filtro_dt_ini.get().strip(),
+            "Data Final": self.filtro_dt_fim.get().strip(),
             "Cód. Interno": self.filtro_cod.get().strip(),
             "Nº Nota": self.filtro_nota.get().strip(),
+            "Fornecedor": self.filtro_fornecedor.get().strip(),
             "Status": self.filtro_status.get().strip(),
             "Limite linhas": self.filtro_limite.get().strip(),
         }
@@ -483,8 +533,13 @@ class AbaExecucao(ctk.CTkFrame):
             self.filtro_dt_fim.delete(0, 'end')
             self.filtro_cod.delete(0, 'end')
             self.filtro_nota.delete(0, 'end')
-            self.filtro_status.set("Todos")
+            self._fornecedores_disponiveis = self.controller.obter_fornecedores_unicos()
+            self.filtro_fornecedor.atualizar_valores(self._fornecedores_disponiveis)
+            self.filtro_fornecedor.set("Todos")
+            self.filtro_status.set("Erro")
             self.filtro_limite.set("100")
+            if hasattr(self, 'filtro_tipo_data'):
+                self.filtro_tipo_data.set("Data Inserção")
         self.atualizar_tabela_dashboard()
 
     def _avaliar_lancamento_nota_filtrada(self, notas, nota_filtrada):
@@ -558,12 +613,22 @@ class AbaExecucao(ctk.CTkFrame):
             cod = self.filtro_cod.get().strip() if hasattr(self, 'filtro_cod') else ""
             status = self.filtro_status.get() if hasattr(self, 'filtro_status') else "Todos"
             nota = self.filtro_nota.get().strip() if hasattr(self, 'filtro_nota') else ""
+            fornecedor = (
+                self.filtro_fornecedor.get().strip()
+                if hasattr(self, 'filtro_fornecedor') else "Todos"
+            )
             limite = self._obter_limite_linhas()
 
-            print(f"\\n[DEBUG TELA] 🔍 Clicou em Buscar. Filtros -> Status: '{status}', Nota: '{nota}'")
+            print(
+                f"\\n[DEBUG TELA] 🔍 Clicou em Buscar. Filtros -> "
+                f"Status: '{status}', Nota: '{nota}', Fornecedor: '{fornecedor}'"
+            )
 
             notas = self.controller.obter_notas_dashboard(
-                dt_ini, dt_fim, cod, status, nota, limite=limite,
+                dt_ini, dt_fim, cod, status, nota,
+                limite=limite,
+                campo_data=self._campo_data_filtro(),
+                fornecedor=fornecedor,
             )
             self.notas_filtradas_atuais = notas or []
             
@@ -602,9 +667,9 @@ class AbaExecucao(ctk.CTkFrame):
                     self.tabela_nf.insert(
                         "", "end",
                         values=(
-                            limpa_none(nota_item.get('data_insercao')),
+                            db.formatar_data_insercao_exibicao(nota_item.get('data_insercao')),
                             limpa_none(nota_item.get('codigo_interno')),
-                            limpa_none(nota_item.get('status')),
+                            db.status_exibicao_painel(nota_item),
                             limpa_none(nota_item.get('fornecedor')),
                             limpa_none(nota_item.get('num_nota')),
                             db.normalizar_placa_painel(nota_item.get('painel_placa')),
@@ -612,7 +677,6 @@ class AbaExecucao(ctk.CTkFrame):
                             limpa_none(nota_item.get('data_em')),
                             limpa_none(nota_item.get('valor')),
                             limpa_none(nota_item.get('sit_nfe')),
-                            limpa_none(nota_item.get('chave_nfe')),
                             limpa_none(nota_item.get('filial')),
                             limpa_none(nota_item.get('user_ins')),
                             limpa_none(nota_item.get('erro_importacao')),
@@ -641,6 +705,19 @@ class AbaExecucao(ctk.CTkFrame):
             return list(self.tabela_nf["columns"]).index(nome_coluna)
         except ValueError:
             return -1
+
+    def _coluna_tree_id(self, nome_coluna):
+        idx = self._indice_coluna(nome_coluna)
+        return f"#{idx + 1}" if idx >= 0 else ""
+
+    def _nota_da_linha(self, item_id):
+        try:
+            idx = self.tabela_nf.index(item_id)
+            if 0 <= idx < len(self.notas_filtradas_atuais):
+                return self.notas_filtradas_atuais[idx] or {}
+        except Exception:
+            pass
+        return {}
 
     def _solicitar_texto_painel(self, titulo, texto_inicial='', placeholder=''):
         popup = ctk.CTkToplevel(self)
@@ -685,16 +762,14 @@ class AbaExecucao(ctk.CTkFrame):
         if not item_clicado:
             return
 
-        if coluna_clicada == "#6":
+        if coluna_clicada == self._coluna_tree_id("placa"):
             self._editar_placa_painel(item_clicado)
-        elif coluna_clicada == "#7":
+        elif coluna_clicada == self._coluna_tree_id("km"):
             self._editar_km_painel(item_clicado)
 
     def _editar_placa_painel(self, item_id):
         valores = list(self.tabela_nf.item(item_id, "values"))
         idx_placa = self._indice_coluna("placa")
-        idx_chave = self._indice_coluna("chave")
-        idx_nota = self._indice_coluna("nota")
         if idx_placa < 0:
             return
 
@@ -712,8 +787,9 @@ class AbaExecucao(ctk.CTkFrame):
             messagebox.showwarning("Placa inválida", placa_norm)
             return
 
-        chave = valores[idx_chave] if idx_chave >= 0 and len(valores) > idx_chave else ""
-        num_nota = valores[idx_nota] if idx_nota >= 0 and len(valores) > idx_nota else ""
+        nota_item = self._nota_da_linha(item_id)
+        chave = str(nota_item.get('chave_nfe') or '').strip()
+        num_nota = str(nota_item.get('num_nota') or '').strip()
         try:
             self.controller.atualizar_painel_placa(chave, num_nota, placa_norm)
         except ValueError as exc:
@@ -726,8 +802,6 @@ class AbaExecucao(ctk.CTkFrame):
     def _editar_km_painel(self, item_id):
         valores = list(self.tabela_nf.item(item_id, "values"))
         idx_km = self._indice_coluna("km")
-        idx_chave = self._indice_coluna("chave")
-        idx_nota = self._indice_coluna("nota")
         if idx_km < 0:
             return
 
@@ -745,8 +819,9 @@ class AbaExecucao(ctk.CTkFrame):
             messagebox.showwarning("KM inválido", km_norm)
             return
 
-        chave = valores[idx_chave] if idx_chave >= 0 and len(valores) > idx_chave else ""
-        num_nota = valores[idx_nota] if idx_nota >= 0 and len(valores) > idx_nota else ""
+        nota_item = self._nota_da_linha(item_id)
+        chave = str(nota_item.get('chave_nfe') or '').strip()
+        num_nota = str(nota_item.get('num_nota') or '').strip()
         try:
             self.controller.atualizar_painel_km(chave, num_nota, km_norm)
         except ValueError as exc:
@@ -766,58 +841,73 @@ class AbaExecucao(ctk.CTkFrame):
             return
 
         valores = list(self.tabela_nf.item(item_clicado, "values"))
-        status = str(valores[2]).strip().upper() if len(valores) > 2 and valores[2] else ""
-        chave_da_nota = str(valores[10]).strip() if len(valores) > 10 else ""
-        erro = str(valores[13]).strip() if len(valores) > 13 else ""
-        observacao = str(valores[14]).strip() if len(valores) > 14 else ""
+        nota_item = self._nota_da_linha(item_clicado)
+        status_real = self._normalizar_status(nota_item.get('status'))
+        chave_da_nota = str(nota_item.get('chave_nfe') or '').strip()
+        erro = str(nota_item.get('erro_importacao') or '').strip()
+        observacao = str(nota_item.get('observacao_nfe') or '').strip()
+        idx_arquiva = self._indice_coluna("arquiva")
+        idx_estoque = self._indice_coluna("estoque")
 
-        # Coluna Arquiva (#17) — não altera se arquivada fixa (cancelada/rejeitada)
-        if coluna_clicada == "#17":
+        if coluna_clicada == self._coluna_tree_id("arquiva"):
             if db.nota_erro_arquivo_indisponivel(erro):
                 return
-            if not self._pode_marcar_arquiva(status):
+            if not self._pode_marcar_arquiva(status_real, nota_item):
                 return
-            if not chave_da_nota or len(valores) < 17 or not str(valores[16]).strip():
+            if not chave_da_nota or idx_arquiva < 0 or not str(valores[idx_arquiva]).strip():
                 return
-            estado_atual = valores[16]
+            estado_atual = valores[idx_arquiva]
             if "☑" in estado_atual:
                 novo_estado_tela = "☐"
                 estado_banco = "☐"
             else:
                 novo_estado_tela = "☑"
                 estado_banco = "☑"
-            valores[16] = novo_estado_tela
-            self.tabela_nf.item(item_clicado, values=valores)
             self.controller.atualizar_arquiva(chave_da_nota, estado_banco)
+            if (
+                (estado_banco == "☑" and self.filtro_status.get() != "Arquivada")
+                or (estado_banco == "☐" and self.filtro_status.get() == "Arquivada")
+            ):
+                self.atualizar_tabela_dashboard()
+                return
+            valores[idx_arquiva] = novo_estado_tela
+            idx_status = self._indice_coluna("status")
+            if idx_status >= 0:
+                if estado_banco == "☑":
+                    valores[idx_status] = "Arquivada"
+                else:
+                    valores[idx_status] = str(nota_item.get('status') or '')
+            self.tabela_nf.item(item_clicado, values=valores)
             return
 
-        # Coluna NFe p/ Estoque (#16) — alternar checkbox
-        if coluna_clicada == "#16":
+        if coluna_clicada == self._coluna_tree_id("estoque"):
             if db.nota_erro_arquivo_indisponivel(erro):
                 return
-            if not self._mostra_checkbox_estoque(status) or len(valores) < 16 or not str(valores[15]).strip():
+            if (
+                not self._mostra_checkbox_estoque(status_real, nota_item)
+                or idx_estoque < 0
+                or not str(valores[idx_estoque]).strip()
+            ):
                 return
-            estado_atual = valores[15]
+            estado_atual = valores[idx_estoque]
             if "☑" in estado_atual:
                 novo_estado_tela = "☐"
                 estado_banco = "☐"
             else:
                 novo_estado_tela = "☑"
                 estado_banco = "☑"
-            valores[15] = novo_estado_tela
+            valores[idx_estoque] = novo_estado_tela
             self.tabela_nf.item(item_clicado, values=valores)
             self.controller.atualizar_estoque(chave_da_nota, estado_banco)
             return
 
-        # Só abre popup ao clicar na coluna Observação (#15)
-        if coluna_clicada == "#15":
+        if coluna_clicada == self._coluna_tree_id("observacao"):
             if observacao:
                 self.mostrar_popup_texto("Observação da NFe", observacao)
             return
 
-        # Só abre popup ao clicar na coluna Erro Importação (#14), se houver erro
-        if coluna_clicada == "#14":
-            if status == "ERRO" and erro:
+        if coluna_clicada == self._coluna_tree_id("erro"):
+            if status_real == "ERRO" and erro:
                 self.mostrar_popup_texto("Motivo do Erro", erro)
             return
 

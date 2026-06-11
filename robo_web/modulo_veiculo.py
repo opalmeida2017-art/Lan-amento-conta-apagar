@@ -30,7 +30,8 @@ def _placa_valida_candidata(placa):
 def extrair_placas_da_observacao(memoria_obs, modelos_usuario):
     """
     Extrai placas da observação da NFe usando os modelos configurados.
-    A comparação é exata (maiúsculas, minúsculas e acentos).
+    O prefixo antes da placa deve ser idêntico ao da NFe; letras da placa
+    aceitam maiúsculas ou minúsculas.
     """
     if not memoria_obs:
         return []
@@ -101,6 +102,51 @@ def _tentar_preencher_cod_veiculo_campo(campo_veiculo, cod_veiculo, log, placa_o
     return True, valor_atual_veiculo
 
 
+def _label_coluna_frota(coluna):
+    if coluna == 'placa':
+        return 'placa cavalo'
+    return str(coluna or 'placa')
+
+
+def montar_mensagem_erro_placa_nao_encontrada(placas_tentadas):
+    """Mensagem detalhada para erro_importacao quando a placa não está na frota."""
+    placas = []
+    for item in placas_tentadas or []:
+        p = _normalizar_placa(item)
+        if p and p not in placas:
+            placas.append(p)
+
+    principal = placas[0] if placas else '?'
+    base = (
+        f'{MSG_ERRO_PLACA_VEICULO}: placa {principal} não encontrada no painel de veículos '
+        '(placa/carreta1/carreta2/carreta3).'
+    )
+
+    parecidas = db.buscar_placas_parecidas_na_frota(principal)
+    if parecidas:
+        itens = []
+        for item in parecidas:
+            col = _label_coluna_frota(item.get('coluna'))
+            itens.append(
+                f"{item['placa']} (cod. {item['cod_veiculo']}, {col})"
+            )
+        base += f" Placa(s) parecida(s) no painel: {', '.join(itens)}."
+        base += (
+            ' Verifique se a NFe trocou letras parecidas (L/I, O/0) '
+            'ou atualize a frota na aba Veículos.'
+        )
+    else:
+        base += (
+            ' Atualize a frota na aba Veículos ou informe a placa correta '
+            'na coluna Placa da aba Execução (duplo clique).'
+        )
+
+    if len(placas) > 1:
+        base += f' Placas testadas na observação: {", ".join(placas)}.'
+
+    return base
+
+
 def _resolver_veiculo_pela_placa(placa_tentativa, log):
     """
     Retorna (cod_veiculo, coluna, erro_tipo).
@@ -118,10 +164,16 @@ def _resolver_veiculo_pela_placa(placa_tentativa, log):
         return None, '', 'carreta_duplicada'
 
     if status != 'ok':
+        parecidas = db.buscar_placas_parecidas_na_frota(placa_tentativa)
         log(
             f"-> ❌ Placa '{placa_tentativa}' não encontrada no painel de veículos "
             '(placa/carreta1/carreta2/carreta3).'
         )
+        if parecidas:
+            sugestoes = ', '.join(
+                f"{p['placa']} (cod. {p['cod_veiculo']})" for p in parecidas
+            )
+            log(f'-> 💡 Placa(s) parecida(s) no painel: {sugestoes}')
         return None, '', 'nao_encontrado'
 
     cod_veiculo = resultado.get('cod_veiculo', '')
@@ -155,7 +207,10 @@ def processar_veiculo(page, log, idx, memoria_obs, modelos_usuario, placa_painel
         time.sleep(0.5)
 
     if placa_painel:
-        log(f'-> Placa informada no painel do robô: {placa_painel}')
+        log(
+            f'-> Placa informada no painel do robô: {placa_painel} '
+            '(observação da NFe ignorada).'
+        )
         cod_veiculo, coluna, erro_tipo = _resolver_veiculo_pela_placa(placa_painel, log)
         if erro_tipo == 'carreta_duplicada':
             return False, [placa_painel], 'carreta_duplicada'

@@ -1,6 +1,9 @@
 # Interface Gráfica
 customtkinter>=5.2.2
 
+# HTTPS (atualização GitHub e licença no .exe empacotado)
+certifi>=2024.2.2
+
 # Segurança e Criptografia
 cryptography>=42.0.5
 bcrypt>=4.1.2

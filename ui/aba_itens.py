@@ -35,7 +35,12 @@ class AbaItens(ctk.CTkFrame):
 
         self._grupos_disponiveis = self.controller.obter_grupos_unicos()
         self.filtro_grupo = ComboBuscaGrupo(
-            self.frame_filtros, self._grupos_disponiveis, width=180, valor_inicial="Todos",
+            self.frame_filtros,
+            self._grupos_disponiveis,
+            width=180,
+            valor_inicial="Todos",
+            on_buscar_enter=self.controller.buscar_grupo_por_nome,
+            on_enter_acao=self.atualizar_tabela,
         )
         self.filtro_grupo.grid(row=0, column=3, padx=2, pady=8, sticky="ew")
 
@@ -339,8 +344,11 @@ class AbaItens(ctk.CTkFrame):
 
         grupos_sem_todos = [g for g in self.controller.obter_grupos_unicos() if g != "Todos"]
         combo_novo_grupo = ComboBuscaGrupo(
-            frame_destino, grupos_sem_todos, width=250,
+            frame_destino,
+            grupos_sem_todos,
+            width=250,
             valor_inicial=grupos_sem_todos[0] if grupos_sem_todos else "",
+            on_buscar_enter=self.controller.buscar_grupo_por_nome,
         )
         combo_novo_grupo.pack(side="left", padx=10, pady=10)
 

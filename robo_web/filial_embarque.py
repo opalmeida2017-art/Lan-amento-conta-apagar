@@ -1039,8 +1039,49 @@ def abrir_aba_dados_gerais_nota(page, log):
     return False
 
 
+def nota_cp_checkbox_finalizada_marcada(page):
+    """True se o checkbox formnota:Nota_finalizada está marcado."""
+    try:
+        if page.is_closed():
+            return False
+    except Exception:
+        return False
+
+    chk = page.locator('input#formnota\\:Nota_finalizada').first
+    if chk.count() > 0:
+        try:
+            return bool(chk.evaluate('el => !!el.checked'))
+        except Exception:
+            pass
+    return False
+
+
+def aguardar_tela_contas_a_pagar(page, log, timeout_ms=12000):
+    """Aguarda o painel Contas a Pagar abrir após clicar em Abrir CP."""
+    time.sleep(1)
+    candidatos = (
+        page.locator('div.rf-p-hdr', has_text=re.compile(r'Contas\s+a\s+Pagar', re.I)).first,
+        page.locator('form#formnota').first,
+        page.locator('input#formnota\\:Nota_finalizada').first,
+    )
+    for loc in candidatos:
+        try:
+            if loc.count() > 0:
+                loc.wait_for(state='visible', timeout=timeout_ms)
+                if log:
+                    log('   ✅ Tela Contas a Pagar carregada.')
+                return True
+        except Exception:
+            continue
+    if log:
+        log('   ⚠️ Cabeçalho Contas a Pagar não confirmado a tempo.')
+    return False
+
+
 def nota_cp_esta_finalizada(page):
-    """True se a nota CP está finalizada (campos bloqueados / ícone Desfinalizar visível)."""
+    """True se a nota CP está finalizada (checkbox, campos bloqueados ou Desfinalizar)."""
+    if nota_cp_checkbox_finalizada_marcada(page):
+        return True
     try:
         if page.is_closed():
             return False

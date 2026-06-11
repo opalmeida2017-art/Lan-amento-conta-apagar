@@ -59,10 +59,29 @@ class PainelFiltros(ctk.CTkFrame):
         )
         self.lbl_dica_ultimos_30_dias.pack(pady=(0, 6), padx=12, anchor="w")
 
+        self.var_ultimos_15_dias = ctk.BooleanVar(value=False)
+        self.chk_ultimos_15_dias = ctk.CTkCheckBox(
+            frame_data,
+            text="Filtrar importações dos últimos 15 dias",
+            variable=self.var_ultimos_15_dias,
+            command=self._alternar_periodo_15_dias,
+        )
+        self.chk_ultimos_15_dias.pack(pady=(4, 4), padx=20, anchor="w")
+
+        self.lbl_dica_ultimos_15_dias = ctk.CTkLabel(
+            frame_data,
+            text="Ao marcar, o robô ignora Mês/Ano e consulta da data atual retroagindo 15 dias.",
+            justify="left",
+            text_color="#9ecbff",
+            font=("Arial", 11),
+            wraplength=220,
+        )
+        self.lbl_dica_ultimos_15_dias.pack(pady=(0, 6), padx=12, anchor="w")
+
         self.var_hoje_apenas = ctk.BooleanVar(value=False)
         self.chk_hoje_apenas = ctk.CTkCheckBox(
             frame_data,
-            text="Consultar e importar somente notas de HOJE",
+            text="Consultar e importar notas de ONTEM e HOJE",
             variable=self.var_hoje_apenas,
             command=self._alternar_periodo_hoje,
         )
@@ -70,7 +89,7 @@ class PainelFiltros(ctk.CTkFrame):
 
         self.lbl_dica_hoje_apenas = ctk.CTkLabel(
             frame_data,
-            text="Ao marcar, o robô ignora Mês/Ano e consulta na SEFAZ apenas a data de hoje.",
+            text="Ao marcar, o robô ignora Mês/Ano e consulta na SEFAZ de ontem até hoje.",
             justify="left",
             text_color="#9ecbff",
             font=("Arial", 11),
@@ -174,9 +193,10 @@ class PainelFiltros(ctk.CTkFrame):
         self.lbl_dica_placas = ctk.CTkLabel(
             frame_leitura,
             text=(
-                "Use A = letra e 1 = número na placa. "
+                "Use A ou a = letra e 1 = número na placa. "
                 "O texto antes da placa deve ser igual ao da NFe "
-                "(ex.: Placa : ou Placa:). Maiúsculas e acentos importam."
+                "(ex.: Placa : ou Placa a). Na NFe, letras da placa "
+                "podem ser maiúsculas ou minúsculas."
             ),
             justify='left',
             text_color='#9ecbff',
@@ -222,9 +242,11 @@ class PainelFiltros(ctk.CTkFrame):
         self.entry_s10 = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. Diesel S10")
         self.entry_s10.pack(pady=4)
         
-        self.entry_s500 = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. Diesel S500")
+        self.entry_s500 = ctk.CTkEntry(
+            frame_codigos, width=150, placeholder_text="Cód. Diesel S500 (ex: 7, 444)",
+        )
         self.entry_s500.pack(pady=4)
-        
+
         self.entry_arla = ctk.CTkEntry(frame_codigos, width=150, placeholder_text="Cód. ARLA 32")
         self.entry_arla.pack(pady=4)
 
@@ -296,6 +318,7 @@ class PainelFiltros(ctk.CTkFrame):
         self.entry_cod_grupo_item.configure(width=largura_codigo)
         self.lbl_aviso_filial_ue.configure(wraplength=wrap)
         self.lbl_dica_ultimos_30_dias.configure(wraplength=wrap)
+        self.lbl_dica_ultimos_15_dias.configure(wraplength=wrap)
         self.lbl_dica_hoje_apenas.configure(wraplength=wrap)
         self.lbl_dica_placas.configure(wraplength=wrap)
         self.lbl_dica_km.configure(wraplength=wrap)
@@ -306,15 +329,27 @@ class PainelFiltros(ctk.CTkFrame):
     def _alternar_periodo_30_dias(self):
         if bool(self.var_ultimos_30_dias.get()):
             self.var_hoje_apenas.set(False)
+            self.var_ultimos_15_dias.set(False)
+        self._aplicar_estado_combos_periodo()
+
+    def _alternar_periodo_15_dias(self):
+        if bool(self.var_ultimos_15_dias.get()):
+            self.var_ultimos_30_dias.set(False)
+            self.var_hoje_apenas.set(False)
         self._aplicar_estado_combos_periodo()
 
     def _alternar_periodo_hoje(self):
         if bool(self.var_hoje_apenas.get()):
             self.var_ultimos_30_dias.set(False)
+            self.var_ultimos_15_dias.set(False)
         self._aplicar_estado_combos_periodo()
 
     def _aplicar_estado_combos_periodo(self):
-        periodo_fixo = bool(self.var_ultimos_30_dias.get()) or bool(self.var_hoje_apenas.get())
+        periodo_fixo = (
+            bool(self.var_ultimos_30_dias.get())
+            or bool(self.var_ultimos_15_dias.get())
+            or bool(self.var_hoje_apenas.get())
+        )
         estado_combos = "disabled" if periodo_fixo else "readonly"
         self.combo_mes.configure(state=estado_combos)
         self.combo_ano.configure(state=estado_combos)
@@ -339,6 +374,11 @@ class PainelFiltros(ctk.CTkFrame):
                 self.chk_hoje_apenas.select()
             else:
                 self.chk_hoje_apenas.deselect()
+
+            if dados_salvos.get('ultimos_15_dias'):
+                self.chk_ultimos_15_dias.select()
+            else:
+                self.chk_ultimos_15_dias.deselect()
 
             self.entry_cod_filial.delete(0, 'end')
             self.entry_cod_filial.insert(0, dados_salvos.get('cod_filial', ''))
@@ -403,15 +443,16 @@ class PainelFiltros(ctk.CTkFrame):
                 messagebox.showwarning('Validação de KM', msg_km)
                 return
 
-            mes_escolhido = self.combo_mes.get()
-            ano_escolhido = self.combo_ano.get()
+            mes_escolhido = self.combo_mes.get().strip()
+            ano_escolhido = self.combo_ano.get().strip()
+            ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
+            hoje_apenas = bool(self.var_hoje_apenas.get())
+            ultimos_15_dias = bool(self.var_ultimos_15_dias.get())
+
             cod_filial = self.entry_cod_filial.get().strip()
             cod_unidade = self.entry_cod_unidade_embarque.get().strip()
             fornecedores_fatura = self.entry_fornecedores_fatura.get().strip()
             cod_tipo_fornecedor = self.entry_cod_tipo_fornecedor.get().strip()
-            ultimos_30_dias = bool(self.var_ultimos_30_dias.get())
-            hoje_apenas = bool(self.var_hoje_apenas.get())
-
             sucesso_f, msg_f = db.salvar_filtros(
                 mes_escolhido,
                 ano_escolhido,
@@ -419,6 +460,7 @@ class PainelFiltros(ctk.CTkFrame):
                 cod_unidade,
                 ultimos_30_dias=ultimos_30_dias,
                 hoje_apenas=hoje_apenas,
+                ultimos_15_dias=ultimos_15_dias,
                 fornecedores_fatura_afaturar=fornecedores_fatura,
                 cod_tipo_fornecedor=cod_tipo_fornecedor,
             )
@@ -427,8 +469,8 @@ class PainelFiltros(ctk.CTkFrame):
             
             # Salva os códigos dos combustíveis (NOVO)
             db.salvar_codigos_combustiveis(
-                self.entry_etanol.get(), self.entry_gasolina.get(), 
-                self.entry_s10.get(), self.entry_s500.get(),self.entry_arla.get()
+                self.entry_etanol.get(), self.entry_gasolina.get(),
+                self.entry_s10.get(), self.entry_s500.get(), self.entry_arla.get(),
             )
 
             cfg_rel = db.carregar_codigos_relatorios()

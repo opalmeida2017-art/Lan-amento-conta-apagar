@@ -17,7 +17,8 @@ from ui.aba_execucao import AbaExecucao
 from controllers.ctrl_execucao import ExecucaoController
 from ui.aba_filtros import AbaFiltros
 from controllers.ctrl_filtros import FiltrosController
-from ui.aba_logs import AbaLogs
+from ui.aba_tarifa_bancaria import AbaTarifaBancaria
+from controllers.ctrl_tarifa_bancaria import TarifaBancariaController
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -206,11 +207,7 @@ class MainWindow(ctk.CTk):
             return
 
         aba_painel_robo = self.tabview.add("Painel do Robô")
-        aba_logs = self.tabview.add("Logs do Robô")
         aba_configuracoes = self.tabview.add("Configurações do Sistema")
-
-        self.aba_logs = AbaLogs(master=aba_logs)
-        self.aba_logs.pack(fill="both", expand=True)
 
         self.aba_config = AbaConfig(
             master=aba_configuracoes,
@@ -235,6 +232,7 @@ class MainWindow(ctk.CTk):
         
         # Criar as áreas para cada sub-aba
         tab_exec = self.sub_tabview.add("Execução e Notas")
+        tab_tarifa = self.sub_tabview.add("Tarifa Bancária")
         tab_filtros = self.sub_tabview.add("Parâmetros ERP")
         tab_veiculos = self.sub_tabview.add("Veículos Ativos")
         tab_itens = self.sub_tabview.add("Itens")
@@ -246,6 +244,11 @@ class MainWindow(ctk.CTk):
         self.aba_execucao.pack(fill="both", expand=True)
         # Notifica o cérebro principal onde está a tela de execução para logs do Robô
         self.controller.view_execucao = self.aba_execucao
+
+        ctrl_tarifa = TarifaBancariaController(app_controller=self.controller)
+        self.aba_tarifa_bancaria = AbaTarifaBancaria(master=tab_tarifa, controller=ctrl_tarifa)
+        self.aba_tarifa_bancaria.pack(fill="both", expand=True)
+        self.controller.view_tarifa_bancaria = self.aba_tarifa_bancaria
 
         # --- PLUGAR ABA FILTROS ---
         ctrl_filtros = FiltrosController()
@@ -292,3 +295,6 @@ class MainWindow(ctk.CTk):
             self.aba_itens._grupos_disponiveis = self.aba_itens.controller.obter_grupos_unicos()
             self.aba_itens.filtro_grupo.atualizar_valores(self.aba_itens._grupos_disponiveis)
             self.aba_itens.atualizar_tabela()
+        elif aba == "Tarifa Bancária" and hasattr(self, "aba_tarifa_bancaria"):
+            self.aba_tarifa_bancaria._atualizar_combo_cnpj()
+            self.aba_tarifa_bancaria.atualizar_painel()

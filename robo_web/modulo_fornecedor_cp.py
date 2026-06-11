@@ -661,6 +661,10 @@ def _remover_parcelas_loop(page, log):
 # --- Validação do nome do fornecedor na importação CP (formCad) ---
 
 _MSG_FORNECEDOR_ALTERADO = re.compile(r'Dados alterados com sucesso', re.I)
+_MSG_CNPJ_DUPLICADO = re.compile(
+    r'Campo\s+chave\s+CNPJ/CPF\s+duplicado',
+    re.I,
+)
 
 
 def carregar_cod_tipo_fornecedor_parametro():
@@ -855,6 +859,38 @@ def _ler_erros_gravacao_fornecedor(aba_forn):
         return []
 
 
+def _ler_cnpj_cpf_cadastro_fornecedor(aba_forn):
+    """Lê o CNPJ/CPF do cadastro do fornecedor antes de fechar a aba."""
+    candidatos = (
+        aba_forn.locator('input#formforn\\:Forn_cnpjCpf').first,
+        aba_forn.locator('input[name="formforn:Forn_cnpjCpf"]').first,
+    )
+    for campo in candidatos:
+        try:
+            if campo.count() == 0:
+                continue
+            valor = str(campo.input_value(timeout=2000) or '').strip()
+            if valor:
+                return valor
+        except Exception:
+            continue
+    return ''
+
+
+def _enriquecer_erro_cnpj_duplicado(aba_forn, msg_erro):
+    """Substitui mensagem de CNPJ/CPF duplicado por orientação ao usuário."""
+    msg = str(msg_erro or '').strip()
+    if not msg or not _MSG_CNPJ_DUPLICADO.search(msg):
+        return msg
+    cnpj = _ler_cnpj_cpf_cadastro_fornecedor(aba_forn)
+    if cnpj:
+        return (
+            f'Favor verificar no SAT os cadastros duplicados e unificar. '
+            f'CNPJ/CPF: {cnpj}'
+        )
+    return 'Favor verificar no SAT os cadastros duplicados e unificar.'
+
+
 def _aguardar_gravacao_fornecedor(aba_forn, log, timeout_seg=20):
     """Aguarda sucesso ou erro após gravar fornecedor. Retorna (ok, mensagem_erro)."""
     inicio = time.time()
@@ -875,7 +911,7 @@ def _aguardar_gravacao_fornecedor(aba_forn, log, timeout_seg=20):
 
         erros = _ler_erros_gravacao_fornecedor(aba_forn)
         if erros:
-            msg = erros[0]
+            msg = _enriquecer_erro_cnpj_duplicado(aba_forn, erros[0])
             log(f'   ❌ Erro ERP ao gravar fornecedor: {msg}')
             return False, msg
 
@@ -883,7 +919,7 @@ def _aguardar_gravacao_fornecedor(aba_forn, log, timeout_seg=20):
 
     erros = _ler_erros_gravacao_fornecedor(aba_forn)
     if erros:
-        msg = erros[0]
+        msg = _enriquecer_erro_cnpj_duplicado(aba_forn, erros[0])
         log(f'   ❌ Erro ERP ao gravar fornecedor: {msg}')
         return False, msg
 

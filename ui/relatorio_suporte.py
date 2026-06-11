@@ -22,6 +22,11 @@ def _pasta_temp():
     return pasta
 
 
+def _escape_conteudo_pre(texto):
+    """Escapa HTML do bloco de logs sem converter aspas em entidades."""
+    return html.escape(str(texto or ""), quote=False)
+
+
 def _periodo_texto(inicio, fim):
     return (
         f"{inicio.strftime('%d/%m/%Y %H:%M:%S')} até "
@@ -136,7 +141,7 @@ def gerar_arquivo_logs_suporte(dt_ini, dt_fim):
     <strong>Período solicitado</strong><br>
     De {html.escape(dt_ini)} 00:00:00 até {html.escape(dt_fim)} 23:59:59
 </div>
-<pre class="logs">{html.escape(texto_logs)}</pre>
+<pre class="logs">{_escape_conteudo_pre(texto_logs)}</pre>
 """
     nome = f"logs_{inicio.strftime('%Y%m%d')}_{fim.strftime('%Y%m%d')}_{_sufixo_arquivo()}.html"
     caminho = _salvar_html_temp(_html_base("Logs Suporte", corpo), nome)
@@ -148,9 +153,9 @@ def _linha_nota(nota):
         return "" if valor is None else str(valor)
 
     return [
-        limpa(nota.get('data_insercao')),
+        db.formatar_data_insercao_exibicao(nota.get('data_insercao')),
         limpa(nota.get('codigo_interno')),
-        limpa(nota.get('status')),
+        db.status_exibicao_painel(nota),
         limpa(nota.get('fornecedor')),
         limpa(nota.get('num_nota')),
         db.normalizar_placa_painel(nota.get('painel_placa')),
@@ -158,7 +163,6 @@ def _linha_nota(nota):
         limpa(nota.get('data_em')),
         limpa(nota.get('valor')),
         limpa(nota.get('sit_nfe')),
-        limpa(nota.get('chave_nfe')),
         limpa(nota.get('filial')),
         limpa(nota.get('user_ins')),
         limpa(nota.get('erro_importacao')),
@@ -166,11 +170,18 @@ def _linha_nota(nota):
     ]
 
 
-def gerar_arquivo_notas_suporte(dt_ini, dt_fim):
-    notas, inicio, fim = db.listar_notas_por_data_insercao(dt_ini, dt_fim)
+def _texto_criterio_data(campo_data):
+    if str(campo_data or '').strip().lower() in ('emissao', 'data_em', 'data emissão nfe'):
+        return 'Data Emissão NFe'
+    return 'Data Inserção'
+
+
+def gerar_arquivo_notas_suporte(dt_ini, dt_fim, campo_data='insercao'):
+    notas, inicio, fim = db.listar_notas_por_periodo(dt_ini, dt_fim, campo_data=campo_data)
+    criterio = _texto_criterio_data(campo_data)
     cabecalhos = [
         "Inserção", "Cód. Interno", "Status", "Fornecedor", "No.Nota",
-        "Placa", "KM", "Data Em.", "Valor", "Sit. NFe", "Chave NFe",
+        "Placa", "KM", "Data Em.", "Valor", "Sit. NFe",
         "Filial", "Usuário Inserção", "Erro Importação", "Observação NFe",
     ]
     linhas = [_linha_nota(nota) for nota in notas]
@@ -191,14 +202,14 @@ def gerar_arquivo_notas_suporte(dt_ini, dt_fim):
 <h1>Relatório de NFes — Suporte</h1>
 <div class="meta">
     Gerado em {html.escape(_agora_formatado())}<br>
-    Período (data de registro no painel): {html.escape(_periodo_texto(inicio, fim))}<br>
+    Período ({html.escape(criterio)}): {html.escape(_periodo_texto(inicio, fim))}<br>
     Total de notas: {len(notas)}
 </div>
 <div class="filtros">
     <strong>Filtro aplicado</strong><br>
     Data inicial: {html.escape(dt_ini)} 00:00:00<br>
     Data final: {html.escape(dt_fim)} 23:59:59<br>
-    Critério: campo <em>Inserção</em> (registro no painel).
+    Critério: campo <em>{html.escape(criterio)}</em>.
 </div>
 <table>
     <thead><tr>{cabecalho_html}</tr></thead>
@@ -218,9 +229,11 @@ def montar_assunto_log_suporte(dt_ini, dt_fim, horario_envio=None):
     return f"LOG {razao} {dt_ini} a {dt_fim}"
 
 
-def enviar_log_suporte_por_email(dt_ini, dt_fim, horario_envio=None):
+def enviar_log_suporte_por_email(dt_ini, dt_fim, horario_envio=None, campo_data='insercao'):
     caminho_logs, qtd_logs, inicio, fim = gerar_arquivo_logs_suporte(dt_ini, dt_fim)
-    caminho_notas, qtd_notas, _, _ = gerar_arquivo_notas_suporte(dt_ini, dt_fim)
+    caminho_notas, qtd_notas, _, _ = gerar_arquivo_notas_suporte(
+        dt_ini, dt_fim, campo_data=campo_data,
+    )
     razao = _obter_razao_social()
     assunto = montar_assunto_log_suporte(dt_ini, dt_fim, horario_envio=horario_envio)
 
@@ -273,13 +286,15 @@ def enviar_log_suporte_por_email(dt_ini, dt_fim, horario_envio=None):
     }
 
 
-def enviar_relatorios_suporte_anonimo(dt_ini, dt_fim):
+def enviar_relatorios_suporte_anonimo(dt_ini, dt_fim, campo_data='insercao'):
     """
     Envia os dois relatórios de suporte (logs + NFes) sem identificação
     da empresa no assunto/corpo.
     """
     caminho_logs, qtd_logs, inicio, fim = gerar_arquivo_logs_suporte(dt_ini, dt_fim)
-    caminho_notas, qtd_notas, _, _ = gerar_arquivo_notas_suporte(dt_ini, dt_fim)
+    caminho_notas, qtd_notas, _, _ = gerar_arquivo_notas_suporte(
+        dt_ini, dt_fim, campo_data=campo_data,
+    )
     assunto = f"Relatorios suporte {dt_ini} a {dt_fim}"
 
     corpo = "\n".join([

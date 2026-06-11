@@ -16,12 +16,12 @@ from robo_web.utils import (
 )
 from robo_web.modulo_veiculo import (
     processar_veiculo,
-    MSG_ERRO_PLACA_VEICULO,
     MSG_ERRO_CARRETA_DUPLICADA,
     MSG_ERRO_FALTA_VEICULO_OBS,
+    montar_mensagem_erro_placa_nao_encontrada,
 )
 from robo_web.modulo_km import processar_km
-from robo_web.modulo_item import processar_cadastro_item
+from robo_web.modulo_item import item_requer_km, processar_cadastro_item
 from robo_web.modulo_fornecedor_cp import validar_e_corrigir_nome_fornecedor_imp_cp
 from robo_web.modulo_gravacao import finalizar_gravacao
 from robo_web.filial_embarque import (
@@ -32,10 +32,20 @@ from robo_web.filial_embarque import (
     obter_codigos_para_nota,
 )
 
-TIMEOUT_TRAVADO_TENTATIVA_SEG = 90
+TIMEOUT_TRAVADO_TENTATIVA_SEG = 45
 TIMEOUT_TOTAL_DOWNLOAD_SEG = 600
+ESPERA_ATUALIZAR_PAINEL_SEG = 2
+ESPERA_SEGUIR_PROXIMA_NOTA_SEG = 2
+ESPERA_POLL_LOG_DOWNLOAD_SEG = 0.75
 SELETOR_LINHAS_NFE = "tbody[id='formCad:tablepnfedestinada:tbn'] tr"
 MSG_XML_NAO_ENCONTRADO_ERP = 'XML não encontrado ERP por favor importa o xml '
+_ERROS_RECUPERAVEIS_BUSCA_INDIVIDUAL = (
+    'xml não encontrado',
+    'link importar não encontrado',
+    'target page, context or browser has been closed',
+    'target closed',
+    'browser has been closed',
+)
 
 
 def _desmarcar_checkboxes_painel_nfe(page, log=None):
@@ -48,7 +58,7 @@ def _desmarcar_checkboxes_painel_nfe(page, log=None):
                 cb.uncheck(force=True)
         except Exception:
             pass
-    time.sleep(0.4)
+    time.sleep(0.2)
     if log:
         log('   -> Checkboxes do painel desmarcados.')
 
@@ -57,10 +67,12 @@ def _marcar_checkbox_linha(linha):
     chk = linha.locator('input[type="checkbox"]').first
     if chk.count() > 0:
         chk.check(force=True)
-        time.sleep(0.5)
+        time.sleep(0.25)
 
 
-def _atualizar_painel_nfe(page, log, segundos=4):
+def _atualizar_painel_nfe(page, log, segundos=None):
+    if segundos is None:
+        segundos = ESPERA_ATUALIZAR_PAINEL_SEG
     """Atualiza a grade antes de analisar a próxima nota."""
     log('   -> Clicando em Atualizar Painel...')
     btn_atualizar = localizar_botao_atualizar_painel(page)
@@ -117,7 +129,7 @@ def _aplicar_filtro_num_nota(page, log, num_nota):
                 f'Não foi possível preencher o filtro Nº Nota no ERP: {e}'
             ) from e
 
-    time.sleep(0.5)
+    time.sleep(0.25)
     log(f'🔎 Filtrando painel ERP pela nota {num_nota} antes de atualizar...')
     return True
 
@@ -136,7 +148,7 @@ def _memoria_painel(memoria=None):
 def _seguir_proxima_nota(page, log, memoria):
     """Atualiza o painel e recomeça pela fila (nº da nota guardado na varredura)."""
     _desmarcar_checkboxes_painel_nfe(page, log)
-    _atualizar_painel_nfe(page, log, segundos=5)
+    _atualizar_painel_nfe(page, log, segundos=ESPERA_SEGUIR_PROXIMA_NOTA_SEG)
     memoria['atualizar_agora'] = False
     return processar_importacao(page, log, memoria)
 
@@ -172,25 +184,66 @@ def _texto_status_linha(linha):
     return (_ler_dado_linha(linha, 'td.rf-edt-td-status') or '').strip()
 
 
+def _normalizar_texto_status(texto):
+    return re.sub(r'\s+', ' ', str(texto or '').upper().strip())
+
+
+def _texto_eh_abrir_cp(texto):
+    """True somente para link/texto Abrir CP (não confunde com Importar/Sem XML)."""
+    t = _normalizar_texto_status(texto)
+    if not t:
+        return False
+    if _texto_eh_sem_xml(t) or _texto_eh_importar(t, ignorar_abrir=True):
+        return False
+    return 'ABRIR' in t and 'CP' in t
+
+
+def _texto_eh_importar(texto, ignorar_abrir=False):
+    """True para status/link Importar (XML disponível no ERP)."""
+    t = _normalizar_texto_status(texto)
+    if not t:
+        return False
+    if _texto_eh_sem_xml(t):
+        return False
+    if not ignorar_abrir and _texto_eh_abrir_cp(t):
+        return False
+    if t == 'IMPORTAR' or t.startswith('IMPORTAR'):
+        return True
+    return 'IMPORTAR' in t and 'ABRIR' not in t and 'SEM XML' not in t
+
+
+def _texto_eh_sem_xml(texto):
+    """True para status Sem XML (precisa download na SEFAZ)."""
+    t = _normalizar_texto_status(texto)
+    if not t:
+        return False
+    return 'SEM XML' in t or 'SEMXML' in t
+
+
 def _status_eh_abrir_cp(status_texto):
     """Nota já importada no ERP — coluna status exibe link/texto Abrir CP."""
-    texto = re.sub(r'\s+', ' ', (status_texto or '').upper().strip())
-    return 'ABRIR' in texto and 'CP' in texto
+    return _texto_eh_abrir_cp(status_texto)
+
+
+def _iterar_links_status_linha(linha):
+    cel_status = linha.locator('td.rf-edt-td-status')
+    if cel_status.count() == 0:
+        return
+    for link in cel_status.locator('a').all():
+        yield link
 
 
 def _linha_tem_link_abrir_cp(linha):
     """Link JSF 'Abrir CP' na coluna status (nota já importada no ERP)."""
-    for sel in (
-        'td.rf-edt-td-status a:has-text("Abrir CP")',
-        'a:has-text("Abrir CP")',
-    ):
-        loc = linha.locator(sel)
-        if loc.count() > 0:
-            try:
-                if loc.first.is_visible(timeout=800):
-                    return True
-            except Exception:
+    for link in _iterar_links_status_linha(linha):
+        try:
+            texto = (link.inner_text(timeout=800) or '').strip()
+            if not _texto_eh_abrir_cp(texto):
+                continue
+            if link.is_visible(timeout=500):
                 return True
+        except Exception:
+            continue
     try:
         if linha.get_by_role('link', name=re.compile(r'^Abrir\s*CP$', re.I)).count() > 0:
             return True
@@ -236,25 +289,16 @@ def _extrair_codigo_interno_status(linha):
 
 
 def _linha_tem_link_importar(linha):
-    """Link/botão Importar na linha (não confundir com link Abrir CP)."""
-    if _linha_status_abrir_cp(linha):
-        return False
-    for sel in (
-        'td.rf-edt-td-status a:has-text("Importar")',
-        'a:has-text("Importar")',
-        'input[value="Importar"]',
-        'input[value*="Importar"]',
-    ):
-        loc = linha.locator(sel)
-        if loc.count() > 0:
-            try:
-                texto = (loc.first.inner_text(timeout=800) or '').strip().upper()
-                if 'ABRIR' in texto and 'CP' in texto:
-                    continue
-                if loc.first.is_visible(timeout=800):
-                    return True
-            except Exception:
+    """Link Importar na coluna status (XML disponível)."""
+    for link in _iterar_links_status_linha(linha):
+        try:
+            texto = (link.inner_text(timeout=800) or '').strip()
+            if not _texto_eh_importar(texto):
+                continue
+            if link.is_visible(timeout=500):
                 return True
+        except Exception:
+            continue
     try:
         if linha.get_by_role('link', name=re.compile(r'^Importar$', re.I)).count() > 0:
             return True
@@ -263,40 +307,50 @@ def _linha_tem_link_importar(linha):
     return False
 
 
-def _linha_pronta_importar(linha):
-    """XML disponível: coluna status = Importar ou link Importar na linha."""
-    if _linha_status_abrir_cp(linha):
-        return False
-    status_texto = _texto_status_linha(linha).upper().strip()
-    if status_texto == 'IMPORTAR' or status_texto.startswith('IMPORTAR'):
-        return True
-    if 'IMPORTAR' in status_texto and 'SEM XML' not in status_texto:
-        return True
-    if 'SEM XML' in status_texto:
-        return _linha_tem_link_importar(linha)
-    return _linha_tem_link_importar(linha)
-
-
-def _linha_precisa_download(linha):
-    """Próximo passo é baixar XML (mesma regra do fluxo antigo)."""
-    if _linha_status_abrir_cp(linha):
-        return False
-    if _linha_pronta_importar(linha):
-        return False
-    status_texto = _texto_status_linha(linha).upper()
-    if 'CANCELAD' in status_texto:
-        return False
-    return True
+def _rotulo_acao_erp(acao):
+    return {
+        'importar': 'Importar',
+        'marcar_importada': 'Abrir CP',
+        'download': 'Sem XML',
+        'ignorar': 'Ignorar',
+    }.get(acao, acao or '?')
 
 
 def _classificar_acao_linha(linha):
-    if _linha_status_abrir_cp(linha):
-        return 'marcar_importada'
-    if _linha_pronta_importar(linha):
-        return 'importar'
-    if _linha_precisa_download(linha):
+    """
+    Classifica a nota conforme o status do ERP (3 opções principais):
+    - Importar  -> fluxo de importação (XML disponível)
+    - Abrir CP  -> abre Conta a Pagar e valida/finaliza
+    - Sem XML   -> download na SEFAZ
+    """
+    status_texto = _normalizar_texto_status(_texto_status_linha(linha))
+
+    if 'CANCELAD' in status_texto:
+        return 'ignorar'
+
+    # 1) Status explícito na coluna (prioridade)
+    if _texto_eh_sem_xml(status_texto):
         return 'download'
-    return 'ignorar'
+    if _texto_eh_abrir_cp(status_texto):
+        return 'marcar_importada'
+    if _texto_eh_importar(status_texto):
+        return 'importar'
+
+    # 2) Links individuais na coluna status
+    link_abrir = _linha_tem_link_abrir_cp(linha)
+    link_importar = _linha_tem_link_importar(linha)
+
+    if link_abrir and not link_importar:
+        return 'marcar_importada'
+    if link_importar and not link_abrir:
+        return 'importar'
+    if link_abrir:
+        return 'marcar_importada'
+    if link_importar:
+        return 'importar'
+
+    # 3) Sem XML / download (checkbox + botão Download)
+    return 'download'
 
 
 def _nota_ja_processada(memoria, nid, num_nota):
@@ -325,15 +379,77 @@ def _ir_para_proxima_nota_apos_tratar(page, log, memoria, dados):
     return _seguir_proxima_nota(page, log, memoria)
 
 
+def _erro_permite_busca_individual(erro_msg):
+    texto = str(erro_msg or '').lower()
+    return any(marca in texto for marca in _ERROS_RECUPERAVEIS_BUSCA_INDIVIDUAL)
+
+
+def _tentar_recuperar_nota_busca_individual(page, log, memoria, num_nota, dados=None):
+    """
+    Busca individual no painel (filtro Nº Nota) e tenta Abrir CP
+    para validar/finalizar a Conta a Pagar.
+    """
+    num_nota = str(num_nota or '').strip()
+    if not num_nota:
+        return False
+
+    dados = dict(dados or _carregar_dados_nota_alvo(num_nota))
+    dados['num_nota'] = num_nota
+    log(f'🔎 Busca individual da nota {num_nota} no painel ERP...')
+
+    try:
+        if page.is_closed():
+            log('   ⚠️ Página do painel fechada — não é possível buscar a nota.')
+            return False
+        btn_voltar = page.locator('input[value="Voltar"]')
+        if btn_voltar.count() > 0:
+            try:
+                if btn_voltar.first.is_visible(timeout=1000):
+                    voltar_ao_painel_nfe(page, log)
+            except Exception:
+                voltar_ao_painel_nfe(page, log)
+        page.bring_to_front()
+        _aplicar_filtro_num_nota(page, log, num_nota)
+        _atualizar_painel_nfe(page, log)
+        page.wait_for_selector(SELETOR_LINHAS_NFE, state='visible', timeout=10000)
+    except Exception as e:
+        log(f'   ⚠️ Falha na busca individual: {e}')
+        return False
+
+    linha, _idx = _localizar_linha_por_num_nota(page, num_nota)
+    if not linha:
+        log(f'   ⚠️ Nota {num_nota} não encontrada após filtro individual.')
+        return False
+
+    if not _linha_status_abrir_cp(linha):
+        log(f'   ⚠️ Nota {num_nota} sem link Abrir CP na busca individual.')
+        return False
+
+    from robo_web.modulo_gravacao import abrir_cp_validar_ou_finalizar
+
+    return abrir_cp_validar_ou_finalizar(page, log, linha, dados)
+
+
 def _falha_nota_registrar_e_proxima(page, log, memoria, dados, erro_msg):
-    """Qualquer falha: grava Erro no painel (dashboard), volta ao painel NFe, próxima nota."""
+    """Qualquer falha: tenta busca individual; senão grava Erro e segue."""
     num = dados.get('num_nota', '?')
+    if _erro_permite_busca_individual(erro_msg):
+        log(
+            f'🔄 Erro recuperável na nota {num} — tentando busca individual (Abrir CP)...'
+        )
+        try:
+            if _tentar_recuperar_nota_busca_individual(page, log, memoria, num, dados):
+                log(f'✅ Nota {num} recuperada via busca individual.')
+                return _ir_para_proxima_nota_apos_tratar(page, log, memoria, dados)
+        except Exception as e:
+            log(f'   ⚠️ Recuperação individual falhou: {e}')
+
     log(f'📝 Registrando erro no painel — nota {num}')
     if erro_msg:
         log(f'   ❌ Motivo: {str(erro_msg)[:220]}')
     db.registrar_erro_nota_painel(dados, erro_msg)
     try:
-        if page.locator('input[value="Voltar"]').count() > 0:
+        if not page.is_closed() and page.locator('input[value="Voltar"]').count() > 0:
             voltar_ao_painel_nfe(page, log)
     except Exception:
         pass
@@ -496,7 +612,7 @@ def _aplicar_estoque_nota_alvo(dados, memoria, log=None):
     return False
 
 
-def _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo):
+def _finalizar_busca_nota_alvo_sem_resultado(page, log, memoria, nota_alvo):
     relancamento_manual = str(memoria.get('nota_alvo') or '').strip() == str(nota_alvo).strip()
     if relancamento_manual:
         encerrada, detalhe = False, ''
@@ -509,6 +625,22 @@ def _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo):
         return
 
     dados = _carregar_dados_nota_alvo(nota_alvo)
+    log(
+        f'🔄 Nota {nota_alvo} não localizada no painel — '
+        'tentando busca individual (Abrir CP)...'
+    )
+    try:
+        if page and _tentar_recuperar_nota_busca_individual(
+            page, log, memoria, nota_alvo, dados=dados,
+        ):
+            _marcar_nota_processada(memoria, dados, nota_alvo)
+            memoria['proximo_num_nota'] = None
+            memoria['proxima_acao'] = None
+            log(f'✅ Nota {nota_alvo} recuperada via busca individual.')
+            return
+    except Exception:
+        pass
+
     db.registrar_erro_nota_painel(dados, MSG_XML_NAO_ENCONTRADO_ERP)
     _marcar_nota_processada(memoria, dados, nota_alvo)
     memoria['proximo_num_nota'] = None
@@ -537,7 +669,7 @@ def _escolher_proxima_linha_ordem_painel(page, log, memoria):
         linha, idx = _localizar_linha_por_num_nota(page, num_nota)
         if not linha:
             log(f'   ⚠️ Nota {num_nota} sumiu da grade; tentando localizar de novo...')
-            time.sleep(1)
+            time.sleep(0.5)
             linha, idx = _localizar_linha_por_num_nota(page, num_nota)
         if not linha:
             log(f'   ⚠️ Nota {num_nota} não localizada — pulando.')
@@ -546,7 +678,7 @@ def _escolher_proxima_linha_ordem_painel(page, log, memoria):
 
         log(
             f'▶ Próxima nota (linha {(idx + 1) if idx >= 0 else "?"}/{total}): '
-            f'{num_nota} ({acao}) | Status: {it["status"][:50]}'
+            f'{num_nota} ({_rotulo_acao_erp(acao)}) | Status: {it["status"][:50]}'
         )
         memoria['proximo_num_nota'] = num_nota
         memoria['proxima_acao'] = acao
@@ -598,60 +730,42 @@ def _escolher_nota_alvo(page, log, memoria, nota_alvo):
         linha, idx = _localizar_linha_por_num_nota(page, num_nota)
         if not linha:
             log(f'   ⚠️ Nota alvo {num_nota} sumiu da grade; tentando localizar de novo...')
-            time.sleep(1)
+            time.sleep(0.5)
             linha, idx = _localizar_linha_por_num_nota(page, num_nota)
         if not linha:
-            _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo)
+            _finalizar_busca_nota_alvo_sem_resultado(page, log, memoria, nota_alvo)
             return None, None, None, None
 
         log(
             f'▶ Nota filtrada no ERP (linha {(idx + 1) if idx >= 0 else "?"}/{total}): '
-            f'{num_nota} ({it["acao"]}) | Status: {it["status"][:50]}'
+            f'{num_nota} ({_rotulo_acao_erp(it["acao"])}) | Status: {it["status"][:50]}'
         )
         memoria['proximo_num_nota'] = num_nota
         memoria['proxima_acao'] = it['acao']
         return linha, num_nota, it['acao'], dados
 
-    _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo)
+    _finalizar_busca_nota_alvo_sem_resultado(page, log, memoria, nota_alvo)
     return None, None, None, None
 
 
 def _processar_nota_abrir_cp(page, log, linha, num_nota, dados, memoria):
-    """Nota já está no ERP como Conta a Pagar."""
+    """Nota já está no ERP como Conta a Pagar — abre CP e valida/finaliza."""
     dados = dict(dados or {})
     dados['num_nota'] = str(num_nota or dados.get('num_nota') or '').strip()
-    nota_alvo = str(memoria.get('nota_alvo') or '').strip()
-    if nota_alvo and nota_alvo == dados['num_nota']:
-        log(
-            f'🔄 Nota {dados["num_nota"]} relançada pelo painel (Abrir CP) — '
-            'executando finalização na Conta a Pagar...'
-        )
-        from robo_web.modulo_gravacao import abrir_cp_linha_e_finalizar
-
-        if abrir_cp_linha_e_finalizar(page, log, linha, dados):
-            _marcar_nota_processada(memoria, dados, num_nota)
-            memoria['proximo_num_nota'] = None
-            memoria['proxima_acao'] = None
-            return None
-        dados_erro = dict(_carregar_dados_nota_alvo(dados['num_nota']))
-        db.registrar_erro_nota_painel(
-            dados_erro,
-            f'Falha ao reprocessar a nota {dados["num_nota"]} via Abrir CP.',
-        )
-        return None
+    from robo_web.modulo_gravacao import abrir_cp_validar_ou_finalizar
 
     log(
-        f'📋 Nota {dados["num_nota"]} com status Abrir CP '
-        '(já importada no ERP). Registrando como Importada no painel...'
+        f'📋 Nota {dados["num_nota"]} com Abrir CP — '
+        'abrindo Conta a Pagar para validar finalização...'
     )
-    codigo = _extrair_codigo_interno_status(linha)
-    db.salvar_nota_raspada(dados)
-    if codigo:
-        dados['codigo_interno'] = codigo
-        log(f'   -> Código interno identificado: {codigo}')
-    dados['erro_importacao'] = ''
-    db.marcar_nota_importada_painel(dados)
-    log(f'✅ Nota {dados["num_nota"]} marcada como Importada no painel do robô.')
+    if abrir_cp_validar_ou_finalizar(page, log, linha, dados):
+        return _ir_para_proxima_nota_apos_tratar(page, log, memoria, dados)
+
+    dados_erro = dict(_carregar_dados_nota_alvo(dados['num_nota']))
+    db.registrar_erro_nota_painel(
+        dados_erro,
+        f'Falha ao validar/finalizar a nota {dados["num_nota"]} via Abrir CP.',
+    )
     return _ir_para_proxima_nota_apos_tratar(page, log, memoria, dados)
 
 
@@ -666,7 +780,7 @@ def _processar_download_nota(page, log, linha, num_nota, dados, memoria):
         if btn_ciencia.count() > 0 and btn_ciencia.is_visible(timeout=2000):
             btn_ciencia.click()
             log('   -> Botão Ciência clicado. Aguardando...')
-            time.sleep(3)
+            time.sleep(1.5)
         else:
             log('   -> Ciência já realizada. Indo para Download...')
 
@@ -706,17 +820,15 @@ def _processar_download_nota(page, log, linha, num_nota, dados, memoria):
 
 def localizar_link_abrir_cp_linha(linha):
     """Retorna o locator do link Abrir CP na linha do painel NFe, ou None."""
-    for sel in (
-        'td.rf-edt-td-status a:has-text("Abrir CP")',
-        'a:has-text("Abrir CP")',
-    ):
-        loc = linha.locator(sel)
-        if loc.count() > 0:
-            try:
-                if loc.first.is_visible(timeout=800):
-                    return loc.first
-            except Exception:
-                return loc.first
+    for link in _iterar_links_status_linha(linha):
+        try:
+            texto = (link.inner_text(timeout=800) or '').strip()
+            if not _texto_eh_abrir_cp(texto):
+                continue
+            if link.is_visible(timeout=500):
+                return link
+        except Exception:
+            continue
     try:
         link = linha.get_by_role('link', name=re.compile(r'^Abrir\s*CP$', re.I))
         if link.count() > 0:
@@ -770,7 +882,7 @@ def _mensagem_download_sucesso(texto_lower):
 def aguardar_mensagem_download_nfe(page, log, num_nota):
     """
     Aguarda span#formCad:msgEMonitorOp após Download NFe.
-    Se a mesma mensagem de 'Tentativa X de 10' ficar 90s, retorna timeout_tentativa.
+    Se a mesma mensagem de 'Tentativa X de 10' ficar travada, retorna timeout_tentativa.
     """
     msg_span = page.locator('span[id="formCad:msgEMonitorOp"]')
     inicio_total = time.time()
@@ -781,16 +893,16 @@ def aguardar_mensagem_download_nfe(page, log, num_nota):
     while time.time() - inicio_total < TIMEOUT_TOTAL_DOWNLOAD_SEG:
         verificar_pagina_erp_ok(page, log)
         try:
-            if not msg_span.is_visible(timeout=1000):
-                time.sleep(1)
+            if not msg_span.is_visible(timeout=500):
+                time.sleep(0.5)
                 continue
             texto = (msg_span.text_content() or '').strip()
         except Exception:
-            time.sleep(1)
+            time.sleep(0.5)
             continue
 
         if not texto:
-            time.sleep(1)
+            time.sleep(0.5)
             continue
 
         if texto != ultimo_log:
@@ -811,12 +923,13 @@ def aguardar_mensagem_download_nfe(page, log, num_nota):
         elif time.time() - inicio_estavel >= TIMEOUT_TRAVADO_TENTATIVA_SEG:
             if 'tentativa' in tl or 'fazendo download' in tl:
                 log(
-                    f'   ⚠️ Download da nota {num_nota} travou 90s na mesma mensagem. '
+                    f'   ⚠️ Download da nota {num_nota} travou '
+                    f'{TIMEOUT_TRAVADO_TENTATIVA_SEG}s na mesma mensagem. '
                     'Seguindo para a próxima nota.'
                 )
                 return 'timeout_tentativa', texto
 
-        time.sleep(1.5)
+        time.sleep(ESPERA_POLL_LOG_DOWNLOAD_SEG)
 
     return 'timeout_total', ultimo_log
 
@@ -861,14 +974,14 @@ def processar_importacao(page, log, memoria=None):
             log(f'🔄 Atualizando painel filtrado pela nota {nota_alvo}...')
         else:
             log('🔄 Atualizando painel (próxima nota = ordem da tabela)...')
-        _atualizar_painel_nfe(page, log, segundos=4)
+        _atualizar_painel_nfe(page, log)
     memoria['atualizar_agora'] = True
 
     try:
         page.wait_for_selector(SELETOR_LINHAS_NFE, state='visible', timeout=10000)
     except Exception:
         if nota_alvo:
-            _finalizar_busca_nota_alvo_sem_resultado(log, memoria, nota_alvo)
+            _finalizar_busca_nota_alvo_sem_resultado(page, log, memoria, nota_alvo)
             return
         log('Nenhuma nota encontrada no painel. Fim do processo.')
         return
@@ -899,7 +1012,7 @@ def processar_importacao(page, log, memoria=None):
                 page, log, memoria, dados,
                 f'Link Importar não encontrado na nota {num_nota}.',
             )
-        time.sleep(3)
+        time.sleep(1.5)
         try:
             verificar_pagina_erp_ok(page, log)
             sucesso = orquestrar_preenchimento_interno(page, log, dados, memoria)
@@ -1077,7 +1190,8 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
             elif erro_veiculo == 'sem_placa_observacao':
                 msg_erro = MSG_ERRO_FALTA_VEICULO_OBS
             else:
-                msg_erro = MSG_ERRO_PLACA_VEICULO
+                placas_erro = placas_extraidas or ([painel_placa] if painel_placa else [])
+                msg_erro = montar_mensagem_erro_placa_nao_encontrada(placas_erro)
             abortar_nota_com_erro(page, log, dados, msg_erro)
             return False
             
@@ -1121,19 +1235,20 @@ def orquestrar_preenchimento_interno(page, log, dados, memoria=None):
         dados['codigo_negocio_veiculo'] = codigo_negocio
         dados['codigos_negocio_itens'].append(codigo_negocio)
 
-        # 4. KM obrigatório (exceto modo estoque)
-        km_ok = processar_km(page, log, idx, memoria_obs, km_painel=painel_km)
-        if not km_ok:
-            abortar_nota_com_erro(
-                page,
-                log,
-                dados,
-                f"KM não encontrado (Item {idx + 1}). "
-                "Preencha a coluna KM no painel ou ajuste o modelo em Parâmetros ERP "
-                "para coincidir exatamente com o texto da observação da NFe "
-                "(maiúsculas, minúsculas e acentos).",
-            )
-            return False
+        # 4. KM obrigatório para combustível (frota, agregado e terceiro)
+        if item_requer_km(page, log, idx):
+            km_ok = processar_km(page, log, idx, memoria_obs, km_painel=painel_km)
+            if not km_ok:
+                abortar_nota_com_erro(
+                    page,
+                    log,
+                    dados,
+                    f"KM não encontrado (Item {idx + 1} — combustível). "
+                    "Preencha a coluna KM no painel ou ajuste o modelo em Parâmetros ERP "
+                    "para coincidir exatamente com o texto da observação da NFe "
+                    "(maiúsculas, minúsculas e acentos).",
+                )
+                return False
 
         processar_cadastro_item(page, log, idx, item_block, codigo_negocio)
 

@@ -3,11 +3,13 @@ import re
 import database_setup as db
 from robo_web.filial_embarque import (
     abrir_aba_dados_gerais_nota,
+    aguardar_tela_contas_a_pagar,
     clicar_finalizar_nota,
     continuar_pagina_nota_cp,
     garantir_nota_cp_editavel,
     localizar_botao_importar_cp,
     localizar_link_abrir_nota,
+    nota_cp_checkbox_finalizada_marcada,
     nota_cp_esta_finalizada,
     obter_codigos_para_nota,
     preparar_tela_dados_gerais_nota_cp,
@@ -120,16 +122,20 @@ def _aguardar_finalizacao_nota(page, log, codigo_interno=''):
 def _registrar_nota_finalizada_painel(dados, codigo_interno, log):
     """Registra no painel somente após finalização confirmada."""
     codigo_interno = str(codigo_interno or '').strip()
-    if not codigo_interno:
-        log('   ⚠️ Finalização OK, mas código interno não identificado para o painel.')
-        return False
-
     dados = dict(dados or {})
     dados['status'] = 'Importado'
-    dados['codigo_interno'] = codigo_interno
     dados['erro_importacao'] = ''
+    if codigo_interno:
+        dados['codigo_interno'] = codigo_interno
+        db.marcar_nota_finalizada_painel(dados)
+        log(
+            f'   📋 Painel atualizado — nota finalizada (código interno {codigo_interno}) '
+            f'com data de inserção registrada.'
+        )
+        return True
+
     db.marcar_nota_importada_painel(dados)
-    log(f'   📋 Painel atualizado — nota finalizada (código interno {codigo_interno}).')
+    log('   📋 Painel atualizado — nota importada (sem código interno identificado).')
     return True
 
 
@@ -241,10 +247,11 @@ def _executar_finalizacao_nota_cp(
     return page_nota
 
 
-def abrir_cp_linha_e_finalizar(page, log, linha, dados):
+def abrir_cp_validar_ou_finalizar(page, log, linha, dados):
     """
-    Abre a nota pelo link Abrir CP no painel NFe e executa o fluxo de finalização na CP.
-    Usado quando o usuário relança manualmente uma nota já importada no ERP.
+    Abre Conta a Pagar pelo link Abrir CP:
+    - se já finalizada, registra importada e fecha;
+    - senão clica em Finalizar, confirma e registra importada.
     """
     from robo_web.modulo_importacao import (
         _carregar_dados_nota_alvo,
@@ -253,16 +260,11 @@ def abrir_cp_linha_e_finalizar(page, log, linha, dados):
     )
 
     num_nota = str((dados or {}).get('num_nota') or '').strip()
-    dados = dict(_carregar_dados_nota_alvo(num_nota) or {})
+    dados = dict(_carregar_dados_nota_alvo(num_nota) or dados or {})
     dados['num_nota'] = num_nota
     dados['status'] = 'Processando'
     dados['erro_importacao'] = ''
     db.salvar_nota_raspada(dados)
-
-    cod_filial, cod_ue, aplicar_fixo = obter_codigos_para_nota(log)
-    codigo_negocio_nota = str(dados.get('codigo_negocio_veiculo') or '1').strip()
-    if codigo_negocio_nota not in ('1', '2'):
-        codigo_negocio_nota = '1'
 
     codigo_interno = str(dados.get('codigo_interno') or '').strip()
     if not codigo_interno:
@@ -274,50 +276,61 @@ def abrir_cp_linha_e_finalizar(page, log, linha, dados):
         return False
 
     log(f'📝 Abrindo Conta a Pagar da nota {num_nota} (Abrir CP)...')
+    nova_aba = None
     try:
         with page.context.expect_page() as nova_aba_info:
             link_abrir.click()
         nova_aba = nova_aba_info.value
-        _aguardar_tela_nota_cp(nova_aba, log)
+        aguardar_tela_contas_a_pagar(nova_aba, log)
     except Exception as e:
         log(f'   ❌ Falha ao abrir a nota CP: {e}')
         return False
 
     if not codigo_interno:
-        try:
-            match = re.search(r'\b(\d{4,})\b', nova_aba.url or '')
-            if match:
-                codigo_interno = match.group(1)
-        except Exception:
-            pass
+        codigo_interno = extrair_codigo_interno_nota_cp(nova_aba, num_nota)
+        if not codigo_interno:
+            try:
+                match = re.search(r'\b(\d{4,})\b', nova_aba.url or '')
+                if match:
+                    codigo_interno = match.group(1)
+            except Exception:
+                pass
 
-    page_nota = _executar_finalizacao_nota_cp(
-        nova_aba,
-        page,
-        log,
-        dados,
-        cod_filial,
-        cod_ue,
-        aplicar_fixo,
-        codigo_negocio_nota,
-        codigo_interno or num_nota,
-    )
-    if not page_nota:
-        msg = 'Falha ao finalizar a nota na Conta a Pagar (Abrir CP).'
-        log(f'   ❌ {msg}')
-        db.registrar_erro_nota_painel(dados, msg)
+    if nota_cp_checkbox_finalizada_marcada(nova_aba):
+        log('   ✅ Conta a Pagar já finalizada — registrando como importada.')
+        ok = _registrar_nota_finalizada_painel(dados, codigo_interno, log)
+        _fechar_nota_cp_e_voltar_painel(page, nova_aba, log)
+        return ok
+
+    log('   🏁 Conta a Pagar aberta e não finalizada — clicando em Finalizar...')
+    if not clicar_finalizar_nota(nova_aba, log):
+        log('   ❌ Não foi possível clicar em Finalizar na Conta a Pagar.')
         _fechar_nota_cp_e_voltar_painel(page, nova_aba, log)
         return False
 
-    log(f'✅ Nota {num_nota} reprocessada e finalizada (Abrir CP).')
+    time.sleep(1)
+    if not nota_cp_checkbox_finalizada_marcada(nova_aba):
+        finalizado, codigo_interno = _aguardar_finalizacao_nota(
+            nova_aba, log, codigo_interno,
+        )
+        if not finalizado:
+            log('   ❌ Finalização não confirmada após clicar em Finalizar.')
+            _fechar_nota_cp_e_voltar_painel(page, nova_aba, log)
+            return False
 
-    try:
-        if not page_nota.is_closed():
-            page_nota.close()
-    except Exception:
-        pass
-    page.bring_to_front()
-    return True
+    ok = _registrar_nota_finalizada_painel(dados, codigo_interno, log)
+    _fechar_nota_cp_e_voltar_painel(page, nova_aba, log)
+    if ok:
+        log(f'✅ Nota {num_nota} finalizada e registrada como importada.')
+    return ok
+
+
+def abrir_cp_linha_e_finalizar(page, log, linha, dados):
+    """
+    Abre a nota pelo link Abrir CP no painel NFe e valida/finaliza na Conta a Pagar.
+    Usado no relançamento manual e na busca individual de recuperação.
+    """
+    return abrir_cp_validar_ou_finalizar(page, log, linha, dados)
 
 
 def finalizar_gravacao(page, log, dados):

@@ -102,17 +102,10 @@ def _fazer_login(page, config, log):
 
 
 def _abrir_painel_nfe(page, log):
+    from robo_web.utils import abrir_painel_nfe_compra
+
     log("📂 Abrindo Painel de NFe para importação manual...")
-    page.locator("text='Painéis' >> visible=true").first.hover()
-    time.sleep(0.8)
-    page.locator("text='NFe' >> visible=true").first.hover()
-    time.sleep(0.8)
-    page.locator(
-        "text='Painel de NFe (Notas de Compras/Destinadas)' >> visible=true"
-    ).first.click(force=True)
-    page.wait_for_load_state("networkidle")
-    time.sleep(2)
-    verificar_pagina_erp_ok(page, log)
+    abrir_painel_nfe_compra(page, log=log)
 
 
 def _localizar_input_xml(page):

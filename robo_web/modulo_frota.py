@@ -62,10 +62,10 @@ def _preparar_lista_veiculos_frota(df):
         registros.append({
             'codVeiculo': int(float(cod)),
             'cavalo': str(row.get('cavalo', '')).strip(),
-            'placa': str(row.get('placa', '')).strip(),
-            'carreta1': str(row.get('carreta1', '')).strip(),
-            'carreta2': str(row.get('carreta2', '')).strip(),
-            'carreta3': str(row.get('carreta3', '')).strip(),
+            'placa': db.normalizar_placa_frota(row.get('placa')),
+            'carreta1': db.normalizar_placa_frota(row.get('carreta1')),
+            'carreta2': db.normalizar_placa_frota(row.get('carreta2')),
+            'carreta3': db.normalizar_placa_frota(row.get('carreta3')),
             'veiculoProprio': str(row.get('veiculoProprio', '')).strip(),
         })
     return registros

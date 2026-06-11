@@ -1,6 +1,7 @@
 import customtkinter as ctk
 from tkinter import messagebox
 import app_version
+import database_setup as db
 
 from agendamento_email import (
     calcular_proxima_execucao,
@@ -11,6 +12,7 @@ from agendamento_email import (
     parse_data_hora,
     resumo_proximo_envio,
 )
+from ui.aba_logs_email import AbaLogsEmail
 
 
 class AbaConfig(ctk.CTkFrame):
@@ -250,6 +252,34 @@ class AbaConfig(ctk.CTkFrame):
             row=4, column=0, columnspan=4, padx=12, pady=(4, 12), sticky="w",
         )
 
+        self.frame_log_email = ctk.CTkFrame(scroll)
+        self.frame_log_email.pack(pady=(0, 10), padx=12, fill="x")
+        frame_log_email = self.frame_log_email
+        frame_log_email.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            frame_log_email,
+            text="Log de Envio de E-mail",
+            font=("Arial", 16, "bold"),
+        ).grid(row=0, column=0, padx=12, pady=(10, 4), sticky="w")
+
+        ctk.CTkLabel(
+            frame_log_email,
+            text="Histórico de envios automáticos, testes e SMTP.",
+            text_color="gray",
+            font=("Arial", 11),
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+
+        self.btn_abrir_log_email = ctk.CTkButton(
+            frame_log_email,
+            text="📋 Abrir Log de E-mail",
+            width=200,
+            fg_color="#1565c0",
+            hover_color="#0d47a1",
+            command=self._abrir_log_email,
+        )
+        self.btn_abrir_log_email.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="w")
+
         self.frame_lic = ctk.CTkFrame(scroll, fg_color="transparent")
         self.frame_lic.pack(pady=(5, 12), padx=12, fill="x")
         frame_lic = self.frame_lic
@@ -327,6 +357,7 @@ class AbaConfig(ctk.CTkFrame):
             self.frame_erp.pack_forget()
             self.frame_email.pack_forget()
             self.frame_agendamento.pack_forget()
+            self.frame_log_email.pack_forget()
             self.btn_enviar_relatorio_email.pack_forget()
             self.btn_atualizar_sistema.pack_forget()
             self.lbl_status_atualizacao.grid_remove()
@@ -550,6 +581,17 @@ class AbaConfig(ctk.CTkFrame):
 
     def atualizar_status_teste_email(self, texto):
         self.lbl_status_teste_email.configure(text=f"Status e-mail: {texto}")
+
+    def _abrir_log_email(self):
+        AbaLogsEmail.abrir_popup(self)
+
+    def atualizar_log_email(self):
+        painel = AbaLogsEmail._painel_ativo
+        if painel is not None:
+            try:
+                painel.carregar_logs()
+            except Exception:
+                pass
 
     def definir_estado_teste_email(self, em_andamento):
         estado = "disabled" if em_andamento else "normal"

@@ -1,3 +1,4 @@
+import os
 import threading
 
 import time
@@ -13,7 +14,8 @@ import agendamento_email
 import log_service
 from ui.relatorio_suporte import enviar_log_suporte_por_email
 
-from robo_web import automacao, modulo_frota, modulo_importa_xml
+from robo_web import automacao, modulo_frota, modulo_importa_xml, modulo_tarifa_bancaria
+from robo_web.modulo_sefaz import resolver_periodo_filtro
 from robo_web.controle_robo import (
     RoboParadoPeloUsuario,
     esta_rodando,
@@ -48,6 +50,7 @@ class AppController:
 
         self.view_execucao = None 
         self.view_importa_xml = None
+        self.view_tarifa_bancaria = None
 
         self.view = MainWindow(controller=self)
         self._configurar_callback_painel_notas()
@@ -59,8 +62,12 @@ class AppController:
         self._importacao_xml_pendente = None
         self._importacao_xml_em_andamento = False
         self._timer_atualizar_painel_id = None
+        self._timer_monitor_tarifa_id = None
+        self._snapshot_tarifas_pasta = {}
+        self._importando_tarifa_auto = False
         self._ultima_msg_status_robo = ""
         self._intervalo_atualizar_painel_ms = 4000
+        self._intervalo_monitor_tarifa_ms = 5000
         self._chaves_envio_suporte_automatico = set()
 
     def _chave_horario_suporte(self, agora, horario):
@@ -113,10 +120,12 @@ class AppController:
                 self._chaves_envio_suporte_automatico.add(chave)
                 db.registrar_envio_suporte_automatico(chave, horario)
             except Exception as exc:
-                log_service.registrar_log(
-                    f"Falha no envio automático de suporte ({horario}): {exc}",
-                    origem="EMAIL_SUPORTE",
-                    nivel="ERRO",
+                db.registrar_log_email(
+                    "Suporte automático",
+                    f"Envio suporte {horario}",
+                    "",
+                    "ERRO",
+                    str(exc),
                 )
 
 
@@ -424,10 +433,12 @@ class AppController:
                 self._limpar_historico_suporte(agora)
                 self._enviar_relatorios_suporte_automatico_silencioso(agora)
             except Exception as exc:
-                log_service.registrar_log(
-                    f"Erro no agendador de suporte: {exc}",
-                    origem="EMAIL_SUPORTE",
-                    nivel="ERRO",
+                db.registrar_log_email(
+                    "Suporte automático",
+                    "Agendador de suporte",
+                    "",
+                    "ERRO",
+                    str(exc),
                 )
             time.sleep(INTERVALO_CHECAGEM_SUPORTE_SEG)
 
@@ -495,10 +506,22 @@ class AppController:
                 )
                 print(
                     "[E-mail] Relatórios enviados com sucesso: "
-                    f"{resultado.get('total_notas', 0)} notas e {resultado.get('total_itens', 0)} itens."
+                    f"{resultado.get('total_notas_erro', 0)} notas com erro, "
+                    f"{resultado.get('total_notas_inseridas', 0)} notas inseridas na data e "
+                    f"{resultado.get('total_itens', 0)} itens."
                 )
+                if self.view and getattr(self.view, "aba_config", None):
+                    try:
+                        self.view.after(0, self.view.aba_config.atualizar_log_email)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[E-mail] Falha no envio automático dos relatórios: {e}")
+                if self.view and getattr(self.view, "aba_config", None):
+                    try:
+                        self.view.after(0, self.view.aba_config.atualizar_log_email)
+                    except Exception:
+                        pass
 
             time.sleep(60)
 
@@ -728,6 +751,114 @@ class AppController:
                 pass
         self._timer_atualizar_painel_id = None
 
+    def _cancelar_monitoramento_tarifa(self):
+        if self._timer_monitor_tarifa_id and self.view:
+            try:
+                self.view.after_cancel(self._timer_monitor_tarifa_id)
+            except Exception:
+                pass
+        self._timer_monitor_tarifa_id = None
+        self._snapshot_tarifas_pasta = {}
+        if self.view_tarifa_bancaria:
+            try:
+                self.view_tarifa_bancaria.definir_monitoramento_ativo(False)
+            except Exception:
+                pass
+
+    def _atualizar_painel_tarifa_auto(self, mensagem='', cor='#3b8ed0'):
+        if not self.view_tarifa_bancaria:
+            return
+        try:
+            if mensagem:
+                self.view_tarifa_bancaria.status_label.configure(
+                    text=f'Status: {mensagem}',
+                    text_color=cor,
+                )
+            self.view_tarifa_bancaria.atualizar_painel()
+        except Exception:
+            pass
+
+    def _verificar_pasta_tarifas_auto(self):
+        if self._importando_tarifa_auto or not esta_rodando():
+            return
+
+        pasta = db.obter_pasta_tarifas_bancarias()
+        if not pasta:
+            return
+
+        pendentes, _snapshot_atual = modulo_tarifa_bancaria.detectar_planilhas_pendentes(
+            self._snapshot_tarifas_pasta,
+            pasta,
+        )
+        if not pendentes:
+            return
+
+        def rodar():
+            self._importando_tarifa_auto = True
+            try:
+                novo_snapshot, importados = modulo_tarifa_bancaria.importar_planilhas_alteradas(
+                    pasta,
+                    self._snapshot_tarifas_pasta,
+                )
+                self._snapshot_tarifas_pasta = novo_snapshot
+                if importados and self.view:
+                    nomes = ', '.join(os.path.basename(p) for p in importados[:3])
+                    if len(importados) > 3:
+                        nomes += '...'
+                    self.view.after(
+                        0,
+                        lambda: self._atualizar_painel_tarifa_auto(
+                            f'{len(importados)} planilha(s) importada(s) automaticamente: {nomes}',
+                            '#107C41',
+                        ),
+                    )
+                elif importados:
+                    pass
+                elif self.view:
+                    self.view.after(
+                        0,
+                        lambda: self._atualizar_painel_tarifa_auto(
+                            'Planilha atualizada, sem tarifas novas no periodo.',
+                            '#f39c12',
+                        ),
+                    )
+            finally:
+                self._importando_tarifa_auto = False
+
+        threading.Thread(target=rodar, daemon=True).start()
+
+    def _agendar_monitoramento_tarifa(self):
+        self._cancelar_monitoramento_tarifa()
+        if not self.view:
+            return
+
+        pasta = db.obter_pasta_tarifas_bancarias()
+        if pasta:
+            self._snapshot_tarifas_pasta = modulo_tarifa_bancaria.obter_snapshot_planilhas(pasta)
+        else:
+            self._snapshot_tarifas_pasta = {}
+
+        if self.view_tarifa_bancaria:
+            try:
+                self.view_tarifa_bancaria.definir_monitoramento_ativo(True)
+            except Exception:
+                pass
+
+        def _tick():
+            if not esta_rodando():
+                self._timer_monitor_tarifa_id = None
+                self._cancelar_monitoramento_tarifa()
+                return
+            self._verificar_pasta_tarifas_auto()
+            if self.view:
+                self._timer_monitor_tarifa_id = self.view.after(
+                    self._intervalo_monitor_tarifa_ms,
+                    _tick,
+                )
+
+        if self.view:
+            self._timer_monitor_tarifa_id = self.view.after(0, _tick)
+
     def _agendar_atualizacao_painel_robo(self):
         self._cancelar_atualizacao_painel_robo()
         if not self.view or not self.view_execucao:
@@ -784,6 +915,7 @@ class AppController:
                     text="Status: Parando robô e fechando navegador...",
                 )
             self._cancelar_atualizacao_painel_robo()
+            self._cancelar_monitoramento_tarifa()
             return
 
         if self.view_execucao:
@@ -804,6 +936,7 @@ class AppController:
         )
         thread_robo.start()
         self._agendar_atualizacao_painel_robo()
+        self._agendar_monitoramento_tarifa()
 
     def executar_robo_playwright(self, nota_alvo=None, compra_estoque=False):
         sessao_log = self._sessao_log_robo
@@ -840,6 +973,7 @@ class AppController:
                 ),
             )
             self._cancelar_atualizacao_painel_robo()
+            self._cancelar_monitoramento_tarifa()
             self._ultima_msg_status_robo = ""
             log_service.finalizar_sessao(
                 sessao_log,
@@ -853,16 +987,47 @@ class AppController:
 
         filtros = db.carregar_filtros() or {}
         mes_escolhido = filtros.get("mes", "01 - Janeiro")
-        anos_selecionados = [filtros.get("ano", "2024")]
+        ano_escolhido = filtros.get("ano", "2024")
+        anos_selecionados = [ano_escolhido]
         ultimos_30_dias = bool(filtros.get("ultimos_30_dias", 0))
-        
-        # 🟢 ALTERAÇÃO CIRÚRGICA: CAPTURA DO FILTRO 'HOJE'
         hoje_apenas = bool(filtros.get("hoje_apenas", 0))
+        ultimos_15_dias = bool(filtros.get("ultimos_15_dias", 0))
 
-        partes_mes = str(mes_escolhido).split(" ")
-        mes_formatado = partes_mes[2] if len(partes_mes) > 2 else partes_mes[0]
-        mes_curto = mes_formatado[:3].capitalize()
-        meses_selecionados = [mes_curto]
+        # Mês/Ano só são obrigatórios no modo calendário (sem período fixo).
+        mes_formatado = ""
+        meses_selecionados = []
+        if not ultimos_30_dias and not hoje_apenas and not ultimos_15_dias:
+            try:
+                meses_selecionados, mes_formatado, ano_validado = resolver_periodo_filtro(
+                    mes_escolhido,
+                    ano_escolhido,
+                )
+                anos_selecionados = [ano_validado]
+            except ValueError as erro_periodo:
+                atualizar_status_ui(str(erro_periodo))
+                log_service.registrar_log(
+                    str(erro_periodo),
+                    origem="ROBO",
+                    sessao_id=sessao_log,
+                    nivel="ERRO",
+                )
+                status_final = "ERRO"
+                log_service.finalizar_sessao(
+                    sessao_log,
+                    origem="ROBO",
+                    status=status_final,
+                )
+                self._sessao_log_robo = None
+                if self.view_execucao:
+                    self.view.after(0, self.view_execucao.restaurar_botao_robo)
+                    self.view.after(
+                        0,
+                        lambda: messagebox.showwarning(
+                            "Parâmetros ERP",
+                            str(erro_periodo),
+                        ),
+                    )
+                return
 
         try:
             if nota_alvo:
@@ -870,9 +1035,11 @@ class AppController:
             else:
                 # 🟢 ALTERAÇÃO CIRÚRGICA: MENSAGEM DINÂMICA
                 if hoje_apenas:
-                    atualizar_status_ui("Iniciando robô para as notas de HOJE...")
+                    atualizar_status_ui("Iniciando robô para as notas de ontem e hoje...")
                 elif ultimos_30_dias:
                     atualizar_status_ui("Iniciando robô para os últimos 30 dias...")
+                elif ultimos_15_dias:
+                    atualizar_status_ui("Iniciando robô para os últimos 15 dias...")
                 else:
                     atualizar_status_ui(f"Iniciando robô para {mes_formatado}/{anos_selecionados[0]}...")
 
@@ -884,7 +1051,8 @@ class AppController:
                 nota_alvo=nota_alvo,
                 compra_estoque=compra_estoque,
                 ultimos_30_dias=ultimos_30_dias,
-                hoje_apenas=hoje_apenas, # 🟢 ALTERAÇÃO CIRÚRGICA: REPASSE DO PARÂMETRO
+                hoje_apenas=hoje_apenas,
+                ultimos_15_dias=ultimos_15_dias,
             )
 
             self.view.after(0, lambda: self.view_execucao.atualizar_tabela_dashboard())
@@ -910,6 +1078,7 @@ class AppController:
 
         finally:
             self._cancelar_atualizacao_painel_robo()
+            self._cancelar_monitoramento_tarifa()
             self._ultima_msg_status_robo = ""
             log_service.finalizar_sessao(
                 sessao_log,

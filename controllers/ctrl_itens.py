@@ -15,6 +15,9 @@ class ItensController:
             if grupo: grupos.add(grupo)
         return ["Todos"] + sorted(list(grupos))
 
+    def buscar_grupo_por_nome(self, texto):
+        return db.buscar_grupos_itens_por_nome(texto)
+
     def obter_itens_filtrados(self, cod="", grupo="Todos", descricao="", limite=100):
         itens = db.obter_itens_erp()
         filtrados = []

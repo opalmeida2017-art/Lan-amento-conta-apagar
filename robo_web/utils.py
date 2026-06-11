@@ -78,7 +78,61 @@ def verificar_pagina_erp_ok(page, log=None):
         raise ErroServidorIndisponivel('HTTP 503 - Service Unavailable')
 
 
-def confirmar_continuar_login_sitesat(page, log=None, espera_total_seg=12):
+TIMEOUT_CARREGAMENTO_ERP_MS = 8000
+TIMEOUT_TELA_POS_LOGIN_MS = 10000
+ESPERA_APOS_LOGIN_MENU_PAINEIS_SEG = 5
+ESPERA_SITESAT_BOTAO_SEG = 5
+
+
+def _locators_tela_pos_login(page):
+    return (
+        page.locator('input#formCad\\:continuarpopup'),
+        page.locator('input[name="formCad:continuarpopup"]'),
+        page.locator('input[value="Continuar Login no SiteSAT"]'),
+        page.locator('input[type="submit"][value*="Continuar Login"]'),
+        page.locator("text='Painéis' >> visible=true"),
+        page.locator('select[id="formCad:codEmpresas"]'),
+    )
+
+
+def aguardar_carregamento_erp(page, log=None, timeout_ms=TIMEOUT_CARREGAMENTO_ERP_MS):
+    """
+    Aguarda carregamento sem networkidle (ERP com AJAX pode travar ~30s no networkidle).
+    """
+    try:
+        page.wait_for_load_state('domcontentloaded', timeout=timeout_ms)
+    except Exception:
+        pass
+    try:
+        page.wait_for_load_state('load', timeout=min(4000, timeout_ms))
+    except Exception:
+        pass
+    if log:
+        log('Página carregada (sem aguardar networkidle).')
+
+
+def aguardar_tela_pos_login(page, log=None, timeout_ms=TIMEOUT_TELA_POS_LOGIN_MS):
+    """Aguarda menu Painéis, SiteSAT ou formulário após Entrar."""
+    inicio = time.time()
+    while (time.time() - inicio) * 1000 < timeout_ms:
+        for loc in _locators_tela_pos_login(page):
+            try:
+                if loc.count() == 0:
+                    continue
+                if loc.first.is_visible(timeout=300):
+                    if log:
+                        log('Tela pós-login pronta.')
+                    return True
+            except Exception:
+                continue
+        time.sleep(0.25)
+    aguardar_carregamento_erp(page, timeout_ms=min(4000, timeout_ms))
+    if log:
+        log('Seguindo após login (elemento da home não detectado a tempo).')
+    return False
+
+
+def confirmar_continuar_login_sitesat(page, log=None, espera_total_seg=ESPERA_SITESAT_BOTAO_SEG):
     """
     Após o login, clica em 'Continuar Login no SiteSAT' se o botão aparecer
     (geralmente no rodapé da página).
@@ -102,16 +156,12 @@ def confirmar_continuar_login_sitesat(page, log=None, espera_total_seg=12):
                     log('→ Confirmando login: clicando em "Continuar Login no SiteSAT"...')
                 btn.scroll_into_view_if_needed()
                 btn.click(force=True)
-                try:
-                    page.wait_for_load_state('networkidle', timeout=30000)
-                except Exception:
-                    page.wait_for_load_state('load', timeout=30000)
-                time.sleep(1)
+                aguardar_tela_pos_login(page, log=log)
                 verificar_pagina_erp_ok(page, log)
                 return True
             except Exception:
                 continue
-        time.sleep(0.4)
+        time.sleep(0.3)
     return False
 
 
@@ -120,40 +170,89 @@ def fazer_login_erp(page, config, log=None, timeout_goto_ms=60000):
     if log:
         log('Realizando login no sistema...')
     page.goto(config['link'], timeout=timeout_goto_ms)
-    try:
-        page.wait_for_load_state('networkidle', timeout=30000)
-    except Exception:
-        page.wait_for_load_state('load', timeout=30000)
+    aguardar_carregamento_erp(page, log=log)
     verificar_pagina_erp_ok(page, log)
 
     page.locator('input[type="text"]').first.fill(config['user_sis'])
     page.locator('input[type="password"]').first.fill(config['senha_sis'])
     page.locator('input[value="Entrar"], button:has-text("Entrar")').first.click(force=True)
 
-    try:
-        page.wait_for_load_state('networkidle', timeout=30000)
-    except Exception:
-        page.wait_for_load_state('load', timeout=30000)
-    time.sleep(2)
+    aguardar_tela_pos_login(page, log=log)
     verificar_pagina_erp_ok(page, log)
     confirmar_continuar_login_sitesat(page, log=log)
-    time.sleep(0.5)
     verificar_pagina_erp_ok(page, log)
+
+
+def aguardar_antes_menu_paineis(page, log=None):
+    """
+    Aguarda menu Painéis ficar visível (até 5s) antes do hover.
+    Evita networkidle de 30s que atrasava a navegação.
+    """
+    if log:
+        log(
+            f'Aguardando até {ESPERA_APOS_LOGIN_MENU_PAINEIS_SEG}s '
+            'para o menu Painéis ficar disponível...'
+        )
+    menu = page.locator("text='Painéis' >> visible=true").first
+    try:
+        menu.wait_for(state='visible', timeout=ESPERA_APOS_LOGIN_MENU_PAINEIS_SEG * 1000)
+        time.sleep(0.5)
+        return
+    except Exception:
+        pass
+    time.sleep(ESPERA_APOS_LOGIN_MENU_PAINEIS_SEG)
+
+
+def abrir_painel_nfe_compra(page, log=None):
+    """Abre Painel de NFe (Notas de Compras/Destinadas) pelo menu Painéis."""
+    aguardar_antes_menu_paineis(page, log=log)
+    page.locator("text='Painéis' >> visible=true").first.hover()
+    time.sleep(0.6)
+    page.locator("text='NFe' >> visible=true").first.hover()
+    time.sleep(0.6)
+    page.locator(
+        "text='Painel de NFe (Notas de Compras/Destinadas)' >> visible=true"
+    ).first.click(force=True)
+    try:
+        page.locator('select[id="formCad:codEmpresas"]').first.wait_for(
+            state='visible',
+            timeout=TIMEOUT_TELA_POS_LOGIN_MS,
+        )
+    except Exception:
+        aguardar_carregamento_erp(page, timeout_ms=TIMEOUT_CARREGAMENTO_ERP_MS)
+    time.sleep(1)
+    verificar_pagina_erp_ok(page, log)
+
+
+def extrair_prefixo_mascara_placa(modelo):
+    """
+    Separa prefixo e máscara do modelo de placa.
+    A máscara é o sufixo mais longo válido (A/a/1/-/espaço) que começa com A maiúsculo,
+    para não confundir o 'a' de textos como 'Placa a' com a máscara.
+    """
+    texto = str(modelo or '').strip()
+    for tamanho in range(len(texto), 6, -1):
+        mascara = texto[-tamanho:]
+        if mascara[0] != 'A':
+            continue
+        if not re.fullmatch(r'[A1a\-\s]+', mascara):
+            continue
+        if not re.fullmatch(r'[A1a][A1a\-\s]{5,}[A1a]', mascara):
+            continue
+        return texto[:-tamanho], mascara
+    return None, None
 
 
 def converter_modelo_para_regex(modelo):
-    """Transforma 'Placa : AAA-1A11' em regex (comparação exata com a NFe)."""
-    match = re.search(r'([A1][A1\-\s]{5,}[A1])', modelo)
-    if not match:
+    """Transforma 'Placa : AAA-1A11' em regex (prefixo exato; letras da placa A-Z ou a-z)."""
+    prefixo, mascara = extrair_prefixo_mascara_placa(modelo)
+    if not mascara:
         return None
-
-    mascara = match.group(1)
-    prefixo = modelo[:match.start()]
 
     mascara_regex = ''
     for char in mascara:
-        if char == 'A':
-            mascara_regex += r'[A-Z]'
+        if char in ('A', 'a'):
+            mascara_regex += r'[A-Za-z]'
         elif char == '1':
             mascara_regex += r'\d'
         elif char == ' ':

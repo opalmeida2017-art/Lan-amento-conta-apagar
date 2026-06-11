@@ -197,7 +197,7 @@ class ConfigController:
             resultado = None
             erro = None
             try:
-                resultado = enviar_relatorios_agendados(cfg)
+                resultado = enviar_relatorios_agendados(cfg, tipo_log="Teste manual")
             except Exception as exc:
                 erro = str(exc)
             finally:
@@ -210,6 +210,8 @@ class ConfigController:
                     if erro:
                         if self.view and hasattr(self.view, "atualizar_status_teste_email"):
                             self.view.atualizar_status_teste_email(f"Falha no teste de e-mail: {erro}")
+                        if self.view and hasattr(self.view, "atualizar_log_email"):
+                            self.view.atualizar_log_email()
                         messagebox.showerror(
                             "Teste de e-mail",
                             f"Falha ao enviar o e-mail de teste:\n{erro}",
@@ -220,10 +222,13 @@ class ConfigController:
                         self.view.atualizar_status_teste_email(
                             "E-mail de teste enviado com sucesso.",
                         )
+                    if self.view and hasattr(self.view, "atualizar_log_email"):
+                        self.view.atualizar_log_email()
                     messagebox.showinfo(
                         "Teste de e-mail",
                         "E-mail de teste enviado com sucesso.\n\n"
-                        f"Notas no anexo: {resultado.get('total_notas', 0)}\n"
+                        f"Notas com erro: {resultado.get('total_notas_erro', 0)}\n"
+                        f"Notas inseridas na data: {resultado.get('total_notas_inseridas', 0)}\n"
                         f"Itens no anexo: {resultado.get('total_itens', 0)}",
                     )
 

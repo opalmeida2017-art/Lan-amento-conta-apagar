@@ -11,15 +11,26 @@ def filtrar_lista_grupos(lista, texto):
 
 
 class ComboBuscaGrupo(ctk.CTkComboBox):
-    """CTkComboBox padrão com busca ao digitar (f → FREIOS, FERRAMENTAS...)."""
+    """Combo com busca ao digitar e opcional consulta no banco ao pressionar Enter."""
 
     TECLAS_IGNORADAS = frozenset({
         "Up", "Down", "Left", "Right", "Escape", "Tab",
         "Shift_L", "Shift_R", "Control_L", "Control_R",
     })
 
-    def __init__(self, master, valores, width=180, valor_inicial="", **kwargs):
+    def __init__(
+        self,
+        master,
+        valores,
+        width=180,
+        valor_inicial="",
+        on_buscar_enter=None,
+        on_enter_acao=None,
+        **kwargs,
+    ):
         self._lista_completa = list(valores)
+        self._on_buscar_enter = on_buscar_enter
+        self._on_enter_acao = on_enter_acao
         super().__init__(master, width=width, values=self._lista_completa, **kwargs)
         if valor_inicial:
             self.set(valor_inicial)
@@ -36,9 +47,23 @@ class ComboBuscaGrupo(ctk.CTkComboBox):
             if event and event.keysym in self.TECLAS_IGNORADAS:
                 return
             if event and event.keysym == "Return":
-                vals = self.cget("values")
-                if vals:
-                    self.set(vals[0])
+                texto = entry.get().strip()
+                if self._on_buscar_enter:
+                    resultado = self._on_buscar_enter(texto)
+                    if resultado:
+                        self.set(resultado)
+                        if resultado not in self._lista_completa:
+                            self._lista_completa.append(resultado)
+                            self.configure(values=self._lista_completa)
+                else:
+                    vals = self.cget("values")
+                    if vals:
+                        self.set(vals[0])
+                if self._on_enter_acao:
+                    try:
+                        self._on_enter_acao()
+                    except Exception:
+                        pass
                 return "break"
 
             texto = entry.get()

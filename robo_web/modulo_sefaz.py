@@ -2,7 +2,12 @@ import time
 import calendar
 from datetime import datetime, timedelta
 
-from .utils import ErroServidorIndisponivel, fazer_login_erp, verificar_pagina_erp_ok
+from .utils import (
+    ErroServidorIndisponivel,
+    abrir_painel_nfe_compra,
+    fazer_login_erp,
+    verificar_pagina_erp_ok,
+)
 
 TIMEOUT_SUCESSO_CONSULTA_MS = 60000
 MAX_TENTATIVAS_CONSULTA = 3
@@ -13,6 +18,81 @@ MAPA_MESES = {
     "Jan": 1, "Fev": 2, "Mar": 3, "Abr": 4, "Mai": 5, "Jun": 6,
     "Jul": 7, "Ago": 8, "Set": 9, "Out": 10, "Nov": 11, "Dez": 12
 }
+
+MAPA_NUMERO_PARA_SIGLA = {
+    f"{num:02d}": sigla for sigla, num in MAPA_MESES.items()
+}
+
+
+def _formatar_excecao(exc):
+    """Evita log vazio quando str(exc) retorna '' (ex.: KeyError(''))."""
+    msg = str(exc).strip()
+    nome = type(exc).__name__
+    if msg:
+        return f"{nome}: {msg}"
+    return f"{nome} (sem mensagem)"
+
+
+def _sigla_mes_valida(entrada):
+    texto = str(entrada or "").strip()
+    if not texto:
+        return None
+    if texto in MAPA_MESES:
+        return texto
+
+    partes = texto.split()
+    if len(partes) >= 3:
+        numero = partes[0]
+        if numero in MAPA_NUMERO_PARA_SIGLA:
+            return MAPA_NUMERO_PARA_SIGLA[numero]
+        nome = partes[2]
+    else:
+        nome = partes[0]
+        if nome in MAPA_NUMERO_PARA_SIGLA:
+            return MAPA_NUMERO_PARA_SIGLA[nome]
+
+    sigla = nome[:3].capitalize()
+    if sigla in MAPA_MESES:
+        return sigla
+    return None
+
+
+def normalizar_lista_meses(meses):
+    """
+    Converte entradas de mês (Jan, Janeiro, 06 - Junho, etc.) para siglas válidas.
+    """
+    if not meses:
+        raise ValueError(
+            "Nenhum mês informado para consulta SEFAZ. "
+            "Abra Parâmetros ERP, selecione Mês/Ano e clique em Salvar Configurações."
+        )
+
+    resultado = []
+    for item in meses:
+        sigla = _sigla_mes_valida(item)
+        if not sigla:
+            raise ValueError(
+                f"Mês inválido ou não informado: '{item}'. "
+                "Abra Parâmetros ERP, selecione Mês/Ano e clique em Salvar Configurações."
+            )
+        if sigla not in resultado:
+            resultado.append(sigla)
+    return resultado
+
+
+def resolver_periodo_filtro(mes_escolhido, ano_escolhido):
+    """Retorna (meses_siglas, mes_exibicao, ano) a partir dos filtros salvos."""
+    ano = str(ano_escolhido or "").strip()
+    if not ano:
+        raise ValueError(
+            "Ano não informado para consulta SEFAZ. "
+            "Abra Parâmetros ERP, selecione Mês/Ano e clique em Salvar Configurações."
+        )
+
+    partes = str(mes_escolhido or "").strip().split()
+    mes_exibicao = partes[2] if len(partes) >= 3 else (partes[0] if partes else "")
+    meses = normalizar_lista_meses([mes_escolhido])
+    return meses, mes_exibicao or meses[0], ano
 
 
 def _texto_acao_inexistente(texto):
@@ -76,7 +156,7 @@ def _aguardar_mensagem_consulta_nfe(page, log, timeout_seg=60):
             ):
                 return 'erro', texto
 
-        time.sleep(0.75)
+        time.sleep(0.4)
 
     return 'timeout', ultimo_log
 
@@ -107,12 +187,12 @@ def _executar_consulta_periodo(page, log, data_ini, data_fim, nome_empresa, desc
 
             if resultado == 'sucesso':
                 log(f"Sucesso na consulta de {descricao_periodo}!")
-                time.sleep(1)
+                time.sleep(0.5)
                 return True
 
             if resultado == 'acao_inexistente':
                 log(f"Consulta de {descricao_periodo} — continuando após 'Ação Inexistente'.")
-                time.sleep(1)
+                time.sleep(0.5)
                 return True
 
             if resultado == 'timeout' and tentativa < MAX_TENTATIVAS_CONSULTA:
@@ -122,7 +202,7 @@ def _executar_consulta_periodo(page, log, data_ini, data_fim, nome_empresa, desc
                     f"(última msg: {mensagem or '—'}). "
                     f"Reiniciando consulta ({tentativa}/{MAX_TENTATIVAS_CONSULTA})..."
                 )
-                time.sleep(2)
+                time.sleep(1)
                 continue
 
             if resultado == 'erro':
@@ -146,7 +226,7 @@ def _executar_consulta_periodo(page, log, data_ini, data_fim, nome_empresa, desc
                     f"{TIMEOUT_SUCESSO_CONSULTA_MS // 1000}s. "
                     f"Reiniciando consulta ({tentativa}/{MAX_TENTATIVAS_CONSULTA})..."
                 )
-                time.sleep(2)
+                time.sleep(1)
                 continue
             raise RuntimeError(
                 f"Falha na consulta SEFAZ de {descricao_periodo} após "
@@ -155,7 +235,10 @@ def _executar_consulta_periodo(page, log, data_ini, data_fim, nome_empresa, desc
     return False
 
 
-def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False, hoje_apenas=False):
+def consultar_sefaz(
+    page, config, meses, anos, log,
+    ultimos_30_dias=False, hoje_apenas=False, ultimos_15_dias=False,
+):
     """
     Realiza o login, navega até o painel e executa o loop de consultas
     pelas empresas e períodos selecionados.
@@ -166,17 +249,7 @@ def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False, hoje_
 
         # NAVEGAÇÃO AO PAINEL DE NFE
         log("Navegando até o Painel de NFe (Notas Destinadas)...")
-        page.locator("text='Painéis' >> visible=true").first.hover()
-        time.sleep(1)
-        page.locator("text='NFe' >> visible=true").first.hover()
-        time.sleep(1)
-
-        page.locator(
-            "text='Painel de NFe (Notas de Compras/Destinadas)' >> visible=true"
-        ).first.click(force=True)
-        page.wait_for_load_state("networkidle")
-        time.sleep(2)
-        verificar_pagina_erp_ok(page, log)
+        abrir_painel_nfe_compra(page, log=log)
 
         # 3. LOOP DE CONSULTAS POR EMPRESA
         combo_empresas = page.locator('select[id="formCad:codEmpresas"]')
@@ -207,19 +280,37 @@ def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False, hoje_
 
             if hoje_apenas:
                 hoje = datetime.now()
-                data_hoje = hoje.strftime("%d/%m/%Y")
+                ontem = hoje - timedelta(days=1)
+                data_ini = ontem.strftime("%d/%m/%Y")
+                data_fim = hoje.strftime("%d/%m/%Y")
                 _executar_consulta_periodo(
                     page,
                     log,
-                    data_hoje,
-                    data_hoje,
+                    data_ini,
+                    data_fim,
                     nome_empresa,
-                    "Apenas Hoje",
+                    "ontem e hoje",
                 )
                 continue
 
+            if ultimos_15_dias:
+                hoje = datetime.now()
+                inicio = hoje - timedelta(days=15)
+                data_ini = inicio.strftime("%d/%m/%Y")
+                data_fim = hoje.strftime("%d/%m/%Y")
+                _executar_consulta_periodo(
+                    page,
+                    log,
+                    data_ini,
+                    data_fim,
+                    nome_empresa,
+                    "últimos 15 dias",
+                )
+                continue
+
+            meses_validos = normalizar_lista_meses(meses)
             for ano in anos:
-                for mes_texto in meses:
+                for mes_texto in meses_validos:
                     mes_num = MAPA_MESES[mes_texto]
                     ultimo_dia = calendar.monthrange(int(ano), mes_num)[1]
                     data_ini = f"01/{mes_num:02d}/{ano}"
@@ -243,5 +334,5 @@ def consultar_sefaz(page, config, meses, anos, log, ultimos_30_dias=False, hoje_
             verificar_pagina_erp_ok(page, log)
         except ErroServidorIndisponivel:
             raise
-        log(f"ERRO NO MODULO SEFAZ: {str(e)}")
+        log(f"ERRO NO MODULO SEFAZ: {_formatar_excecao(e)}")
         return False

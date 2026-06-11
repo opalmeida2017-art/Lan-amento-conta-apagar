@@ -47,7 +47,8 @@ def extrair_km_da_observacao(memoria_obs, log=None):
 
 
 def processar_km(page, log, idx, memoria_obs, km_painel=None):
-    log(f'   -> Verificando KM para o Item {idx + 1}...')
+    """Preenche KM do item de combustível (chamar apenas após item_requer_km)."""
+    log(f'   -> Verificando KM para o Item {idx + 1} (combustível)...')
 
     campo_km = page.locator(
         f'input[name^="formCad:tableItemNota:{idx}:j_idt"][size="10"]'
@@ -63,7 +64,10 @@ def processar_km(page, log, idx, memoria_obs, km_painel=None):
 
     km_painel = re.sub(r'\D', '', str(km_painel or ''))
     if km_painel:
-        log(f'   -> KM informado no painel do robô: {km_painel}')
+        log(
+            f'   -> KM informado no painel do robô: {km_painel} '
+            '(observação da NFe ignorada).'
+        )
         campo_km.first.click()
         campo_km.first.clear()
         campo_km.first.fill(km_painel)

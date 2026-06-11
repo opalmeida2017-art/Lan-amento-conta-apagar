@@ -16,7 +16,7 @@ from .runtime_config import usar_headless
 from .utils import ErroServidorIndisponivel, verificar_pagina_erp_ok
 
 TEMPO_ESPERA_503_SEG = 120
-TEMPO_ESPERA_RETOMADA_SEG = 120
+TEMPO_ESPERA_RETOMADA_SEG = 60
 
 
 def _aguardar_segundos(segundos, log, mensagem):
@@ -35,7 +35,8 @@ def _executar_sessao(
     nota_alvo=None,
     compra_estoque=False,
     ultimos_30_dias=False,
-    hoje_apenas=False, # 🟢 ADICIONADO AQUI
+    hoje_apenas=False,
+    ultimos_15_dias=False,
 ):
     browser = p.chromium.launch(headless=usar_headless(), channel="chrome")
     registrar_browser(browser)
@@ -53,11 +54,12 @@ def _executar_sessao(
                 anos,
                 log,
                 ultimos_30_dias=ultimos_30_dias,
-                hoje_apenas=hoje_apenas, # 🟢 ADICIONADO AQUI
+                hoje_apenas=hoje_apenas,
+                ultimos_15_dias=ultimos_15_dias,
             ):
-                return False
-                
-                raise RuntimeError('Consulta SEFAZ não confirmou sucesso.')
+                raise RuntimeError(
+                    'Consulta SEFAZ não confirmou sucesso. Verifique os logs acima.'
+                )
             verificar_parada()
             verificar_pagina_erp_ok(page, log)
             time.sleep(2)
@@ -93,7 +95,8 @@ def iniciar_automacao(
     nota_alvo=None,
     compra_estoque=False,
     ultimos_30_dias=False,
-    hoje_apenas=False, # 🟢 ADICIONADO AQUI
+    hoje_apenas=False,
+    ultimos_15_dias=False,
 ):
     def log(msg):
         if progresso_callback:
@@ -107,7 +110,7 @@ def iniciar_automacao(
             verificar_parada()
             try:
                 with sync_playwright() as p:
-                    _executar_sessao(
+                    ok_sessao = _executar_sessao(
                         p,
                         config,
                         meses,
@@ -116,7 +119,12 @@ def iniciar_automacao(
                         nota_alvo=nota_alvo,
                         compra_estoque=compra_estoque,
                         ultimos_30_dias=ultimos_30_dias,
-                        hoje_apenas=hoje_apenas, # 🟢 ADICIONADO AQUI
+                        hoje_apenas=hoje_apenas,
+                        ultimos_15_dias=ultimos_15_dias,
+                    )
+                if not ok_sessao:
+                    raise RuntimeError(
+                        'Sessão do robô encerrada sem concluir consulta/importação.'
                     )
                 if not modo_continuo:
                     log('Automação concluída.')
@@ -124,7 +132,7 @@ def iniciar_automacao(
                 _aguardar_segundos(
                     TEMPO_ESPERA_RETOMADA_SEG,
                     log,
-                    '✅ Ciclo concluído. Aguardando 2 min para verificar novas notas...',
+                    '✅ Ciclo concluído. Aguardando 1 min para verificar novas notas...',
                 )
                 log('🔄 Retomando monitoramento automático do painel...')
             except RoboParadoPeloUsuario:
@@ -150,7 +158,7 @@ def iniciar_automacao(
                 _aguardar_segundos(
                     TEMPO_ESPERA_RETOMADA_SEG,
                     log,
-                    f'⚠️ Erro de tela/processamento: {e}. Aguardando 2 min para retomar...',
+                    f'⚠️ Erro de tela/processamento: {e}. Aguardando 1 min para retomar...',
                 )
                 log('🔄 Retomando monitoramento automático após erro...')
     finally:

@@ -2,10 +2,13 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 import log_service
+from ui.entry_data_calendario import EntryDataComCalendario
 from ui.relatorio_suporte import enviar_log_suporte_por_email
 
 
 class AbaLogs(ctk.CTkFrame):
+    _janela_popup = None
+
     def __init__(self, master):
         super().__init__(master, fg_color="transparent")
         self._listener = self._receber_evento_log
@@ -13,6 +16,62 @@ class AbaLogs(ctk.CTkFrame):
         self._montar_tela()
         log_service.adicionar_listener(self._listener)
         self.carregar_logs()
+
+    @classmethod
+    def abrir_popup(cls, parent):
+        if cls._janela_popup is not None:
+            try:
+                if cls._janela_popup.winfo_exists():
+                    cls._janela_popup.lift()
+                    cls._janela_popup.focus_force()
+                    return
+            except Exception:
+                cls._janela_popup = None
+
+        popup = ctk.CTkToplevel(parent)
+        popup.title("Logs de Importação NFe")
+        cls._maximizar_janela(popup)
+        popup.minsize(760, 480)
+        popup.transient(parent.winfo_toplevel())
+
+        cls._janela_popup = popup
+        popup.grid_rowconfigure(0, weight=1)
+        popup.grid_columnconfigure(0, weight=1)
+
+        painel = cls(popup)
+        painel.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+        def ao_fechar():
+            cls._janela_popup = None
+            try:
+                painel.destroy()
+            except Exception:
+                pass
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+
+        popup.protocol("WM_DELETE_WINDOW", ao_fechar)
+
+    @staticmethod
+    def _maximizar_janela(janela):
+        def aplicar():
+            try:
+                janela.state("zoomed")
+                return
+            except Exception:
+                pass
+            try:
+                janela.attributes("-zoomed", True)
+                return
+            except Exception:
+                pass
+            largura = janela.winfo_screenwidth()
+            altura = janela.winfo_screenheight()
+            janela.geometry(f"{largura}x{altura}+0+0")
+
+        janela.after(80, aplicar)
 
     def _montar_tela(self):
         self.grid_columnconfigure(0, weight=1)
@@ -24,7 +83,7 @@ class AbaLogs(ctk.CTkFrame):
 
         ctk.CTkLabel(
             frame_topo,
-            text="Logs do Robô e Execuções",
+            text="Logs de Importação NFe",
             font=("Arial", 18, "bold"),
             text_color="#3b8ed0",
         ).grid(row=0, column=0, columnspan=8, padx=10, pady=(10, 8), sticky="w")
@@ -32,20 +91,14 @@ class AbaLogs(ctk.CTkFrame):
         ctk.CTkLabel(frame_topo, text="Data/Hora Inicial:").grid(
             row=1, column=0, padx=(10, 4), pady=(0, 6), sticky="w",
         )
-        self.entry_dt_ini = ctk.CTkEntry(
-            frame_topo, width=150, placeholder_text="DD/MM/AAAA HH:MM",
-        )
+        self.entry_dt_ini = EntryDataComCalendario(frame_topo, width=130, com_hora=True)
         self.entry_dt_ini.grid(row=1, column=1, padx=4, pady=(0, 6), sticky="w")
-        self.entry_dt_ini.bind("<KeyRelease>", self._formatar_data_hora_teclado)
 
         ctk.CTkLabel(frame_topo, text="Data/Hora Final:").grid(
             row=1, column=2, padx=(10, 4), pady=(0, 6), sticky="w",
         )
-        self.entry_dt_fim = ctk.CTkEntry(
-            frame_topo, width=150, placeholder_text="DD/MM/AAAA HH:MM",
-        )
+        self.entry_dt_fim = EntryDataComCalendario(frame_topo, width=130, com_hora=True)
         self.entry_dt_fim.grid(row=1, column=3, padx=4, pady=(0, 6), sticky="w")
-        self.entry_dt_fim.bind("<KeyRelease>", self._formatar_data_hora_teclado)
 
         ctk.CTkLabel(frame_topo, text="Nº Nota:").grid(
             row=1, column=4, padx=(10, 4), pady=(0, 6), sticky="w",
@@ -169,7 +222,7 @@ class AbaLogs(ctk.CTkFrame):
     def _abrir_popup_suporte(self):
         popup = ctk.CTkToplevel(self)
         popup.title("Enviar log para suporte")
-        popup.geometry("420x260")
+        popup.geometry("420x300")
         popup.resizable(False, False)
         popup.attributes("-topmost", True)
         popup.transient(self.winfo_toplevel())
@@ -190,7 +243,7 @@ class AbaLogs(ctk.CTkFrame):
         ctk.CTkLabel(
             popup,
             text=(
-                "Informe as datas de registro no painel.\n"
+                "Informe o período e o critério de data das NFes.\n"
                 "Será enviado um e-mail para o suporte com os relatórios em anexo."
             ),
             justify="center",
@@ -200,23 +253,28 @@ class AbaLogs(ctk.CTkFrame):
         frame_campos = ctk.CTkFrame(popup, fg_color="transparent")
         frame_campos.pack(pady=4, padx=20, fill="x")
 
-        ctk.CTkLabel(frame_campos, text="Data inicial:").grid(
+        ctk.CTkLabel(frame_campos, text="Filtrar NFes por:").grid(
             row=0, column=0, padx=(0, 8), pady=6, sticky="w",
         )
-        entry_ini = ctk.CTkEntry(
-            frame_campos, width=180, placeholder_text="DD/MM/AAAA",
+        combo_criterio = ctk.CTkComboBox(
+            frame_campos,
+            width=180,
+            values=["Data Inserção", "Data Emissão NFe"],
         )
-        entry_ini.grid(row=0, column=1, pady=6, sticky="w")
-        entry_ini.bind("<KeyRelease>", self._formatar_data_teclado)
+        combo_criterio.set("Data Inserção")
+        combo_criterio.grid(row=0, column=1, pady=6, sticky="w")
 
-        ctk.CTkLabel(frame_campos, text="Data final:").grid(
+        ctk.CTkLabel(frame_campos, text="Data inicial:").grid(
             row=1, column=0, padx=(0, 8), pady=6, sticky="w",
         )
-        entry_fim = ctk.CTkEntry(
-            frame_campos, width=180, placeholder_text="DD/MM/AAAA",
+        entry_ini = EntryDataComCalendario(frame_campos, width=180)
+        entry_ini.grid(row=1, column=1, pady=6, sticky="w")
+
+        ctk.CTkLabel(frame_campos, text="Data final:").grid(
+            row=2, column=0, padx=(0, 8), pady=6, sticky="w",
         )
-        entry_fim.grid(row=1, column=1, pady=6, sticky="w")
-        entry_fim.bind("<KeyRelease>", self._formatar_data_teclado)
+        entry_fim = EntryDataComCalendario(frame_campos, width=180)
+        entry_fim.grid(row=2, column=1, pady=6, sticky="w")
 
         frame_btn = ctk.CTkFrame(popup, fg_color="transparent")
         frame_btn.pack(pady=16, padx=20, fill="x")
@@ -247,8 +305,13 @@ class AbaLogs(ctk.CTkFrame):
             )
             self.update_idletasks()
 
+            criterio = combo_criterio.get().strip()
+            campo_data = 'emissao' if criterio == 'Data Emissão NFe' else 'insercao'
+
             try:
-                resultado = enviar_log_suporte_por_email(dt_ini, dt_fim)
+                resultado = enviar_log_suporte_por_email(
+                    dt_ini, dt_fim, campo_data=campo_data,
+                )
             except Exception as exc:
                 messagebox.showerror(
                     "Erro ao enviar e-mail",
@@ -324,6 +387,8 @@ class AbaLogs(ctk.CTkFrame):
         self.caixa_logs.configure(state="disabled")
 
     def _append_evento(self, evento):
+        if not log_service.e_log_importacao_nfe(evento):
+            return
         try:
             filtrados = log_service.filtrar_logs(
                 [evento],
@@ -365,7 +430,7 @@ class AbaLogs(ctk.CTkFrame):
     def carregar_logs(self):
         filtros = self._obter_filtros()
         limite = None if self._ha_filtro_ativo() else self._obter_limite()
-        logs = log_service.listar_logs(limite=limite)
+        logs = log_service.listar_logs(limite=limite, apenas_importacao_nfe=True)
         try:
             logs = log_service.filtrar_logs(
                 logs,

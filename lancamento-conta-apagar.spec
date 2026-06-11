@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+# Build: gerar_exe.bat  (ou pyinstaller lancamento-conta-apagar.spec + python pos_build_dist.py)
 import re
 import sys
 from pathlib import Path
@@ -94,7 +95,19 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
+tmp_certifi = collect_all('certifi')
+datas += tmp_certifi[0]
+binaries += tmp_certifi[1]
+hiddenimports += tmp_certifi[2]
+
+_arq_exemplo_licenca = RAIZ / 'licenca_config.example.py'
+if _arq_exemplo_licenca.is_file():
+    datas.append((str(_arq_exemplo_licenca), '.'))
+
 hiddenimports += [
+    'certifi',
+    'http_ssl',
+    'github_updater',
     'robo_web',
     'robo_web.automacao',
     'robo_web.controle_robo',

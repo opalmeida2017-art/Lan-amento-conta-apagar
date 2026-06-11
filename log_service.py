@@ -11,6 +11,7 @@ def _db_path():
     return db.caminho_banco()
 _LISTENERS = []
 _LOCK = threading.Lock()
+ORIGENS_LOG_IMPORTACAO_NFE = frozenset({"ROBO", "XML"})
 
 
 def _agora_texto():
@@ -18,7 +19,7 @@ def _agora_texto():
 
 
 def garantir_tabelas():
-    conn = sqlite3.connect(_db_path())
+    conn = db.conectar_banco()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -145,7 +146,16 @@ def registrar_log(mensagem, origem="SISTEMA", sessao_id=None, nivel="INFO"):
     return evento
 
 
-def listar_logs(limite=1000):
+def e_log_importacao_nfe(evento):
+    origem = str((evento or {}).get("origem") or "").strip().upper()
+    return origem in ORIGENS_LOG_IMPORTACAO_NFE
+
+
+def filtrar_apenas_importacao_nfe(logs):
+    return [log for log in (logs or []) if e_log_importacao_nfe(log)]
+
+
+def listar_logs(limite=1000, apenas_importacao_nfe=False):
     garantir_tabelas()
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
@@ -174,6 +184,8 @@ def listar_logs(limite=1000):
         )
     linhas = [dict(row) for row in cursor.fetchall()]
     conn.close()
+    if apenas_importacao_nfe:
+        return filtrar_apenas_importacao_nfe(linhas)
     return linhas
 
 

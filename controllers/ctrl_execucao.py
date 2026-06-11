@@ -5,9 +5,30 @@ class ExecucaoController:
         self.app_controller = app_controller 
         self.view = None
 
-    def obter_notas_dashboard(self, dt_ini, dt_fim, cod, status, nota, limite=100):
+    def obter_fornecedores_unicos(self):
+        return db.obter_fornecedores_unicos_notas()
+
+    def buscar_fornecedor_por_nome(self, texto):
+        return db.buscar_fornecedores_por_nome(texto)
+
+    def obter_notas_dashboard(
+        self,
+        dt_ini,
+        dt_fim,
+        cod,
+        status,
+        nota,
+        limite=100,
+        campo_data='insercao',
+        fornecedor='Todos',
+    ):
         try:
-            notas = db.listar_notas_filtradas(dt_ini, dt_fim, cod, status, nota, limite=limite)
+            notas = db.listar_notas_filtradas(
+                dt_ini, dt_fim, cod, status, nota,
+                fornecedor=fornecedor,
+                limite=limite,
+                campo_data=campo_data,
+            )
             # Garante que sempre retorne uma lista, mesmo que vazia
             return notas if notas is not None else []
         except Exception as e:
