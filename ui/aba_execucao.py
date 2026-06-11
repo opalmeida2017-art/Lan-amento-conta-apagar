@@ -1,5 +1,6 @@
 import customtkinter as ctk
 from tkinter import ttk, messagebox
+import re
 import database_setup as db
 from ui.combo_busca_grupo import ComboBuscaGrupo
 from ui.aba_logs import AbaLogs
@@ -138,6 +139,14 @@ class AbaExecucao(ctk.CTkFrame):
             fg_color="#1565c0",
             hover_color="#0d47a1",
             command=self._abrir_logs_robo,
+        )
+        self.btn_lancar_lote = ctk.CTkButton(
+            self.frame_filtros,
+            text="Lançar nota em lote",
+            width=150,
+            fg_color="#6a1b9a",
+            hover_color="#4a148c",
+            command=self._abrir_popup_lancar_lote,
         )
         self.lbl_imprimir_relatorio = ctk.CTkLabel(
             self.frame_filtros,
@@ -300,7 +309,8 @@ class AbaExecucao(ctk.CTkFrame):
             self.lbl_filtro_fornecedor, self.filtro_fornecedor,
             self.lbl_filtro_status, self.filtro_status,
             self.lbl_filtro_limite, self.filtro_limite,
-            self.btn_filtrar, self.btn_limpar, self.btn_logs_robo, self.lbl_imprimir_relatorio,
+            self.btn_filtrar, self.btn_limpar, self.btn_lancar_lote, self.btn_logs_robo,
+            self.lbl_imprimir_relatorio,
         ]
         for widget in widgets:
             widget.grid_forget()
@@ -320,7 +330,8 @@ class AbaExecucao(ctk.CTkFrame):
             self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 1, 6)
             self.btn_filtrar.grid(row=1, column=8, padx=(15, 5), pady=8, sticky="ew")
             self.btn_limpar.grid(row=1, column=9, padx=5, pady=8, sticky="ew")
-            self.btn_logs_robo.grid(row=0, column=11, padx=(10, 5), pady=8, sticky="e")
+            self.btn_lancar_lote.grid(row=0, column=10, padx=(10, 5), pady=8, sticky="e")
+            self.btn_logs_robo.grid(row=0, column=11, padx=(5, 5), pady=8, sticky="e")
             self.frame_filtros.grid_columnconfigure(10, weight=1)
             self.lbl_imprimir_relatorio.grid(
                 row=1, column=11, padx=(10, 10), pady=8, sticky="e",
@@ -339,7 +350,8 @@ class AbaExecucao(ctk.CTkFrame):
             self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 2, 2)
             self.btn_filtrar.grid(row=2, column=4, padx=(15, 5), pady=8, sticky="ew")
             self.btn_limpar.grid(row=2, column=5, padx=5, pady=8, sticky="ew")
-            self.btn_logs_robo.grid(row=1, column=7, padx=(10, 5), pady=8, sticky="e")
+            self.btn_lancar_lote.grid(row=1, column=6, padx=(10, 5), pady=8, sticky="e")
+            self.btn_logs_robo.grid(row=1, column=7, padx=(5, 5), pady=8, sticky="e")
             self.frame_filtros.grid_columnconfigure(6, weight=1)
             self.lbl_imprimir_relatorio.grid(
                 row=2, column=7, padx=(10, 10), pady=8, sticky="e",
@@ -357,6 +369,7 @@ class AbaExecucao(ctk.CTkFrame):
         self._grid_filtro(self.lbl_filtro_limite, self.filtro_limite, 3, 2)
         self.btn_filtrar.grid(row=4, column=0, padx=(10, 5), pady=8, sticky="ew")
         self.btn_limpar.grid(row=4, column=1, padx=5, pady=8, sticky="ew")
+        self.btn_lancar_lote.grid(row=3, column=0, columnspan=2, padx=(10, 5), pady=8, sticky="ew")
         self.btn_logs_robo.grid(row=3, column=2, columnspan=3, padx=(10, 5), pady=8, sticky="e")
         self.frame_filtros.grid_columnconfigure(4, weight=1)
         self.lbl_imprimir_relatorio.grid(
@@ -365,6 +378,106 @@ class AbaExecucao(ctk.CTkFrame):
 
     def _abrir_logs_robo(self):
         AbaLogs.abrir_popup(self)
+
+    @staticmethod
+    def _parsear_notas_lote(texto):
+        partes = re.split(r"[,;\s]+", str(texto or "").strip())
+        notas = []
+        vistos = set()
+        for parte in partes:
+            nota = str(parte or "").strip()
+            if not nota or nota in vistos:
+                continue
+            vistos.add(nota)
+            notas.append(nota)
+        return notas
+
+    def preparar_filtro_nota_lote(self, nota):
+        if not hasattr(self, "filtro_nota"):
+            return
+        self.filtro_nota.delete(0, "end")
+        self.filtro_nota.insert(0, str(nota or "").strip())
+        self.atualizar_tabela_dashboard(perguntar_lancamento=False)
+
+    def _abrir_popup_lancar_lote(self):
+        popup = ctk.CTkToplevel(self)
+        popup.title("Lançar nota em lote")
+        popup.geometry("520x260")
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+        popup.transient(self.winfo_toplevel())
+        popup.grab_set()
+
+        popup.update_idletasks()
+        x = self.winfo_rootx() + max((self.winfo_width() - 520) // 2, 0)
+        y = self.winfo_rooty() + max((self.winfo_height() - 260) // 2, 0)
+        popup.geometry(f"520x260+{x}+{y}")
+
+        ctk.CTkLabel(
+            popup,
+            text="Lançar notas em lote",
+            font=("Arial", 16, "bold"),
+            text_color="#6a1b9a",
+        ).pack(pady=(16, 6))
+
+        ctk.CTkLabel(
+            popup,
+            text="Informe os números das notas separados por vírgula.\nExemplo: 1111, 3333, 52566",
+            justify="center",
+        ).pack(pady=(0, 10))
+
+        entry_notas = ctk.CTkEntry(
+            popup,
+            width=460,
+            placeholder_text="1111, 3333, 52566",
+        )
+        entry_notas.pack(pady=(0, 8))
+        entry_notas.focus_set()
+
+        lbl_status = ctk.CTkLabel(popup, text="", text_color="gray")
+        lbl_status.pack(pady=(0, 6))
+
+        frame_botoes = ctk.CTkFrame(popup, fg_color="transparent")
+        frame_botoes.pack(pady=8, padx=16, fill="x")
+        frame_botoes.grid_columnconfigure((0, 1), weight=1)
+
+        def fechar():
+            popup.grab_release()
+            popup.destroy()
+
+        def iniciar_lote():
+            notas = self._parsear_notas_lote(entry_notas.get())
+            if not notas:
+                lbl_status.configure(
+                    text="Informe ao menos um número de nota.",
+                    text_color="#e53935",
+                )
+                return
+            lbl_status.configure(
+                text=f"Iniciando lote com {len(notas)} nota(s)...",
+                text_color="#3b8ed0",
+            )
+            popup.update_idletasks()
+            fechar()
+            self.controller.iniciar_robo_lote(notas)
+
+        ctk.CTkButton(
+            frame_botoes,
+            text="Iniciar lote",
+            fg_color="#6a1b9a",
+            hover_color="#4a148c",
+            command=iniciar_lote,
+        ).grid(row=0, column=0, padx=6, sticky="ew")
+
+        ctk.CTkButton(
+            frame_botoes,
+            text="Cancelar",
+            fg_color="gray",
+            command=fechar,
+        ).grid(row=0, column=1, padx=6, sticky="ew")
+
+        popup.protocol("WM_DELETE_WINDOW", fechar)
+        entry_notas.bind("<Return>", lambda _event: iniciar_lote())
 
     def chamar_robo(self):
         self.controller.iniciar_robo()

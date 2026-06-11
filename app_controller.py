@@ -1,7 +1,7 @@
 import os
 import threading
-
 import time
+from datetime import timedelta
 
 import sqlite3
 
@@ -30,7 +30,7 @@ from ui.main_window import MainWindow
 # False = sem login/token antigo; licença remota GitHub usa licenca_config.py
 
 REQUER_LOGIN_E_LICENCA = False
-HORARIOS_SUPORTE_AUTOMATICO = ("08:00", "12:00", "15:00", "18:00")
+HORARIOS_SUPORTE_AUTOMATICO = ("17:00",)
 INTERVALO_CHECAGEM_SUPORTE_SEG = 30
 
 
@@ -107,14 +107,15 @@ class AppController:
         return pendentes
 
     def _enviar_relatorios_suporte_automatico_silencioso(self, agora):
-        """Disparo fixo de suporte sem aviso em UI."""
-        dt_ref = agora.strftime("%d/%m/%Y")
+        """Disparo fixo de suporte sem aviso em UI (dia anterior até hoje)."""
+        dt_fim = agora.strftime("%d/%m/%Y")
+        dt_ini = (agora - timedelta(days=1)).strftime("%d/%m/%Y")
 
         for chave, horario in self._slots_suporte_pendentes(agora):
             try:
                 enviar_log_suporte_por_email(
-                    dt_ref,
-                    dt_ref,
+                    dt_ini,
+                    dt_fim,
                     horario_envio=horario,
                 )
                 self._chaves_envio_suporte_automatico.add(chave)
@@ -426,7 +427,7 @@ class AppController:
         thread_suporte.start()
 
     def loop_envio_suporte_automatico(self):
-        """Envia relatórios de suporte nos horários fixos, mesmo com licença bloqueada."""
+        """Envia relatórios de suporte às 17:00 (ontem até hoje), mesmo com licença bloqueada."""
         while True:
             try:
                 agora = agendamento_email._agora()
@@ -938,6 +939,263 @@ class AppController:
         self._agendar_atualizacao_painel_robo()
         self._agendar_monitoramento_tarifa()
 
+    def iniciar_robo_lote(self, notas):
+        notas_lote = [
+            str(nota or "").strip()
+            for nota in (notas or [])
+            if str(nota or "").strip()
+        ]
+        if not notas_lote:
+            messagebox.showwarning("Lançar nota em lote", "Informe ao menos um número de nota.")
+            return
+
+        if self.sistema_bloqueado or not self._licenca_remota_liberada():
+            log_service.registrar_log(
+                "Tentativa de lote bloqueada por licença.",
+                origem="ROBO",
+                nivel="WARN",
+            )
+            messagebox.showerror("Bloqueado", "Sistema sem licença ativa. Verifique com o suporte.")
+            return
+
+        if self._importacao_xml_em_andamento:
+            messagebox.showwarning(
+                "Importação XML",
+                "Aguarde a importação XML terminar antes de iniciar o robô.",
+            )
+            return
+
+        if esta_rodando():
+            solicitar_parada()
+            log_service.registrar_log(
+                "Solicitação de parada do lote enviada pelo usuário.",
+                origem="ROBO",
+                sessao_id=self._sessao_log_robo,
+                nivel="WARN",
+            )
+            if self.view_execucao:
+                self.view_execucao.status_label.configure(
+                    text="Status: Parando lote e fechando navegador...",
+                )
+            self._cancelar_atualizacao_painel_robo()
+            self._cancelar_monitoramento_tarifa()
+            return
+
+        if self.view_execucao:
+            self.view_execucao.botao_robo_em_execucao()
+
+        resumo_notas = ", ".join(notas_lote[:8])
+        if len(notas_lote) > 8:
+            resumo_notas += f" (+{len(notas_lote) - 8})"
+        self._sessao_log_robo = log_service.iniciar_sessao(
+            origem="ROBO",
+            descricao=f"Lote de notas ({len(notas_lote)}): {resumo_notas}",
+        )
+
+        thread_robo = threading.Thread(
+            target=self.executar_robo_lote_playwright,
+            args=(notas_lote,),
+            daemon=True,
+        )
+        thread_robo.start()
+        self._agendar_atualizacao_painel_robo()
+        self._agendar_monitoramento_tarifa()
+
+    def _resolver_parametros_robo(self, atualizar_status_ui, sessao_log):
+        config = db.carregar_configuracoes()
+        if not config or not config.get("link"):
+            self.view.after(
+                0,
+                lambda: messagebox.showwarning(
+                    "Aviso",
+                    "Configure o link e usuário do ERP na aba Configurações.",
+                ),
+            )
+            return None
+
+        filtros = db.carregar_filtros() or {}
+        mes_escolhido = filtros.get("mes", "01 - Janeiro")
+        ano_escolhido = filtros.get("ano", "2024")
+        anos_selecionados = [ano_escolhido]
+        ultimos_30_dias = bool(filtros.get("ultimos_30_dias", 0))
+        hoje_apenas = bool(filtros.get("hoje_apenas", 0))
+        ultimos_15_dias = bool(filtros.get("ultimos_15_dias", 0))
+
+        mes_formatado = ""
+        meses_selecionados = []
+        if not ultimos_30_dias and not hoje_apenas and not ultimos_15_dias:
+            try:
+                meses_selecionados, mes_formatado, ano_validado = resolver_periodo_filtro(
+                    mes_escolhido,
+                    ano_escolhido,
+                )
+                anos_selecionados = [ano_validado]
+            except ValueError as erro_periodo:
+                atualizar_status_ui(str(erro_periodo))
+                log_service.registrar_log(
+                    str(erro_periodo),
+                    origem="ROBO",
+                    sessao_id=sessao_log,
+                    nivel="ERRO",
+                )
+                self.view.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Parâmetros ERP",
+                        str(erro_periodo),
+                    ),
+                )
+                return None
+
+        return {
+            "config": config,
+            "meses_selecionados": meses_selecionados,
+            "anos_selecionados": anos_selecionados,
+            "ultimos_30_dias": ultimos_30_dias,
+            "hoje_apenas": hoje_apenas,
+            "ultimos_15_dias": ultimos_15_dias,
+            "mes_formatado": mes_formatado,
+        }
+
+    def executar_robo_lote_playwright(self, notas_lote):
+        sessao_log = self._sessao_log_robo
+        notas_lote = [str(nota or "").strip() for nota in (notas_lote or []) if str(nota or "").strip()]
+        total = len(notas_lote)
+
+        def atualizar_status_ui(mensagem):
+            texto = str(mensagem or "").strip()
+            if not texto:
+                return
+
+            if texto != self._ultima_msg_status_robo:
+                self._ultima_msg_status_robo = texto
+                log_service.registrar_log(
+                    texto,
+                    origem="ROBO",
+                    sessao_id=sessao_log,
+                )
+
+            if self.view_execucao:
+                self.view.after(
+                    0,
+                    lambda t=texto: self.view_execucao.status_label.configure(
+                        text=f"Status: {t}",
+                    ),
+                )
+
+        status_final = "SUCESSO"
+        erros = 0
+        parada_manual = False
+
+        params = self._resolver_parametros_robo(atualizar_status_ui, sessao_log)
+        if not params:
+            status_final = "ERRO"
+            self._finalizar_sessao_robo(sessao_log, status_final)
+            return
+
+        try:
+            atualizar_status_ui(f"Iniciando lote com {total} nota(s)...")
+            for indice, nota_alvo in enumerate(notas_lote, start=1):
+                if self.view_execucao:
+                    self.view.after(
+                        0,
+                        lambda n=nota_alvo: self.view_execucao.preparar_filtro_nota_lote(n),
+                    )
+
+                atualizar_status_ui(
+                    f"Lote {indice}/{total}: iniciando nota {nota_alvo}...",
+                )
+                try:
+                    automacao.iniciar_automacao(
+                        params["config"],
+                        params["meses_selecionados"],
+                        params["anos_selecionados"],
+                        progresso_callback=atualizar_status_ui,
+                        nota_alvo=nota_alvo,
+                        compra_estoque=False,
+                        ultimos_30_dias=params["ultimos_30_dias"],
+                        hoje_apenas=params["hoje_apenas"],
+                        ultimos_15_dias=params["ultimos_15_dias"],
+                    )
+                    atualizar_status_ui(f"Lote {indice}/{total}: nota {nota_alvo} concluída.")
+                except RoboParadoPeloUsuario:
+                    parada_manual = True
+                    status_final = "PARADA"
+                    atualizar_status_ui("Lote interrompido pelo usuário.")
+                    break
+                except Exception as exc:
+                    erros += 1
+                    msg_erro = str(exc)
+                    atualizar_status_ui(
+                        f"Lote {indice}/{total}: erro na nota {nota_alvo} — {msg_erro}",
+                    )
+                    log_service.registrar_log(
+                        f"Erro no lote (nota {nota_alvo}): {msg_erro}",
+                        origem="ROBO",
+                        sessao_id=sessao_log,
+                        nivel="ERROR",
+                    )
+
+                if self.view_execucao:
+                    self.view.after(0, self.view_execucao.atualizar_tabela_dashboard)
+
+            if not parada_manual:
+                if erros:
+                    status_final = "ERRO"
+                    resumo = (
+                        f"Lote finalizado com {erros} erro(s) em {total} nota(s)."
+                    )
+                else:
+                    resumo = f"Lote finalizado: {total} nota(s) processada(s)."
+                atualizar_status_ui(resumo)
+                self.view.after(
+                    0,
+                    lambda: messagebox.showinfo("Lançar nota em lote", resumo),
+                )
+
+        except Exception as e:
+            msg_erro = str(e)
+            status_final = "ERRO"
+            atualizar_status_ui("O lote parou devido a um erro.")
+            log_service.registrar_log(
+                f"Falha crítica no lote: {msg_erro}",
+                origem="ROBO",
+                sessao_id=sessao_log,
+                nivel="ERROR",
+            )
+            self.view.after(
+                0,
+                lambda: messagebox.showerror(
+                    "Erro Crítico",
+                    f"Falha no lote de notas:\n{msg_erro}",
+                ),
+            )
+
+        finally:
+            self._finalizar_sessao_robo(sessao_log, status_final)
+
+    def _finalizar_sessao_robo(self, sessao_log, status_final):
+        self._cancelar_atualizacao_painel_robo()
+        self._cancelar_monitoramento_tarifa()
+        self._ultima_msg_status_robo = ""
+        log_service.finalizar_sessao(
+            sessao_log,
+            origem="ROBO",
+            status=status_final,
+        )
+        importacao_pendente = self._importacao_xml_pendente
+        self._importacao_xml_pendente = None
+        self._sessao_log_robo = None
+        if self.view_execucao:
+            self.view.after(0, self.view_execucao.restaurar_botao_robo)
+            self.view.after(0, self.view_execucao.atualizar_tabela_dashboard)
+        if importacao_pendente:
+            self._atualizar_status_importa_xml(
+                "Robô finalizado. Iniciando agora a importação manual de XML.",
+                cor="#f39c12",
+            )
+            self.view.after(500, lambda: self.iniciar_importacao_xml(importacao_pendente))
+
     def executar_robo_playwright(self, nota_alvo=None, compra_estoque=False):
         sessao_log = self._sessao_log_robo
 
@@ -962,97 +1220,37 @@ class AppController:
                     ),
                 )
 
-        config = db.carregar_configuracoes()
         status_final = "SUCESSO"
-        if not config or not config.get("link"):
-            self.view.after(
-                0,
-                lambda: messagebox.showwarning(
-                    "Aviso",
-                    "Configure o link e usuário do ERP na aba Configurações.",
-                ),
-            )
-            self._cancelar_atualizacao_painel_robo()
-            self._cancelar_monitoramento_tarifa()
-            self._ultima_msg_status_robo = ""
-            log_service.finalizar_sessao(
-                sessao_log,
-                origem="ROBO",
-                status="ERRO",
-            )
-            self._sessao_log_robo = None
-            if self.view_execucao:
-                self.view.after(0, self.view_execucao.restaurar_botao_robo)
+        params = self._resolver_parametros_robo(atualizar_status_ui, sessao_log)
+        if not params:
+            self._finalizar_sessao_robo(sessao_log, "ERRO")
             return
-
-        filtros = db.carregar_filtros() or {}
-        mes_escolhido = filtros.get("mes", "01 - Janeiro")
-        ano_escolhido = filtros.get("ano", "2024")
-        anos_selecionados = [ano_escolhido]
-        ultimos_30_dias = bool(filtros.get("ultimos_30_dias", 0))
-        hoje_apenas = bool(filtros.get("hoje_apenas", 0))
-        ultimos_15_dias = bool(filtros.get("ultimos_15_dias", 0))
-
-        # Mês/Ano só são obrigatórios no modo calendário (sem período fixo).
-        mes_formatado = ""
-        meses_selecionados = []
-        if not ultimos_30_dias and not hoje_apenas and not ultimos_15_dias:
-            try:
-                meses_selecionados, mes_formatado, ano_validado = resolver_periodo_filtro(
-                    mes_escolhido,
-                    ano_escolhido,
-                )
-                anos_selecionados = [ano_validado]
-            except ValueError as erro_periodo:
-                atualizar_status_ui(str(erro_periodo))
-                log_service.registrar_log(
-                    str(erro_periodo),
-                    origem="ROBO",
-                    sessao_id=sessao_log,
-                    nivel="ERRO",
-                )
-                status_final = "ERRO"
-                log_service.finalizar_sessao(
-                    sessao_log,
-                    origem="ROBO",
-                    status=status_final,
-                )
-                self._sessao_log_robo = None
-                if self.view_execucao:
-                    self.view.after(0, self.view_execucao.restaurar_botao_robo)
-                    self.view.after(
-                        0,
-                        lambda: messagebox.showwarning(
-                            "Parâmetros ERP",
-                            str(erro_periodo),
-                        ),
-                    )
-                return
 
         try:
             if nota_alvo:
                 atualizar_status_ui(f"Iniciando robô para a nota {nota_alvo}...")
+            elif params["hoje_apenas"]:
+                atualizar_status_ui("Iniciando robô para as notas de ontem e hoje...")
+            elif params["ultimos_30_dias"]:
+                atualizar_status_ui("Iniciando robô para os últimos 30 dias...")
+            elif params["ultimos_15_dias"]:
+                atualizar_status_ui("Iniciando robô para os últimos 15 dias...")
             else:
-                # 🟢 ALTERAÇÃO CIRÚRGICA: MENSAGEM DINÂMICA
-                if hoje_apenas:
-                    atualizar_status_ui("Iniciando robô para as notas de ontem e hoje...")
-                elif ultimos_30_dias:
-                    atualizar_status_ui("Iniciando robô para os últimos 30 dias...")
-                elif ultimos_15_dias:
-                    atualizar_status_ui("Iniciando robô para os últimos 15 dias...")
-                else:
-                    atualizar_status_ui(f"Iniciando robô para {mes_formatado}/{anos_selecionados[0]}...")
+                atualizar_status_ui(
+                    f"Iniciando robô para {params['mes_formatado']}/"
+                    f"{params['anos_selecionados'][0]}...",
+                )
 
             automacao.iniciar_automacao(
-                config,
-                meses_selecionados,
-                anos_selecionados,
+                params["config"],
+                params["meses_selecionados"],
+                params["anos_selecionados"],
                 progresso_callback=atualizar_status_ui,
                 nota_alvo=nota_alvo,
                 compra_estoque=compra_estoque,
-                ultimos_30_dias=ultimos_30_dias,
-                hoje_apenas=hoje_apenas,
-                ultimos_15_dias=ultimos_15_dias,
+                ultimos_30_dias=params["ultimos_30_dias"],
+                hoje_apenas=params["hoje_apenas"],
+                ultimos_15_dias=params["ultimos_15_dias"],
             )
 
             self.view.after(0, lambda: self.view_execucao.atualizar_tabela_dashboard())
@@ -1077,23 +1275,4 @@ class AppController:
             self.view.after(0, lambda: messagebox.showerror("Erro Crítico", f"Falha na automação:\n{msg_erro}"))
 
         finally:
-            self._cancelar_atualizacao_painel_robo()
-            self._cancelar_monitoramento_tarifa()
-            self._ultima_msg_status_robo = ""
-            log_service.finalizar_sessao(
-                sessao_log,
-                origem="ROBO",
-                status=status_final,
-            )
-            importacao_pendente = self._importacao_xml_pendente
-            self._importacao_xml_pendente = None
-            self._sessao_log_robo = None
-            if self.view_execucao:
-                self.view.after(0, self.view_execucao.restaurar_botao_robo)
-                self.view.after(0, self.view_execucao.atualizar_tabela_dashboard)
-            if importacao_pendente:
-                self._atualizar_status_importa_xml(
-                    "Robô finalizado. Iniciando agora a importação manual de XML.",
-                    cor="#f39c12",
-                )
-                self.view.after(500, lambda: self.iniciar_importacao_xml(importacao_pendente))
+            self._finalizar_sessao_robo(sessao_log, status_final)

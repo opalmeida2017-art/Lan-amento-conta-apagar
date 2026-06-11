@@ -74,3 +74,6 @@ class ExecucaoController:
         self.app_controller.iniciar_robo(
             nota_alvo=nota_alvo, compra_estoque=compra_estoque,
         )
+
+    def iniciar_robo_lote(self, notas):
+        self.app_controller.iniciar_robo_lote(notas)

@@ -82,10 +82,15 @@ VSVersionInfo(
 # Instrucao de versao automatica:
 # Toda vez que gerar o .exe por este .spec:
 # V.1.0.0 -> ... -> V.1.0.9 -> V.1.1.0 -> V.1.1.1 ...
+# Tambem atualiza release_notas.py com a nova versao (commits git ou placeholder).
 VERSAO_ANTIGA = _ler_versao_atual()
 VERSAO_BUILD = _proxima_versao(VERSAO_ANTIGA)
 _salvar_versao_app(VERSAO_BUILD)
 _gerar_arquivo_versao_windows(VERSAO_BUILD)
+
+import release_notas
+
+release_notas.preparar_notas_build(VERSAO_ANTIGA, VERSAO_BUILD, raiz=RAIZ)
 
 datas = []
 binaries = []
@@ -108,6 +113,7 @@ hiddenimports += [
     'certifi',
     'http_ssl',
     'github_updater',
+    'release_notas',
     'robo_web',
     'robo_web.automacao',
     'robo_web.controle_robo',
