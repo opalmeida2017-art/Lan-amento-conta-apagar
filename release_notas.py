@@ -33,8 +33,38 @@ NOTAS_POR_VERSAO = {
 }
 
 
+def _normalizar_item(item):
+    texto = str(item or "").strip()
+    texto = re.sub(r"\s+", " ", texto)
+    return texto
+
+
 def itens_versao(versao):
     return list(NOTAS_POR_VERSAO.get(str(versao or "").strip(), []))
+
+
+def _todos_itens_documentados():
+    itens = []
+    for lista in NOTAS_POR_VERSAO.values():
+        itens.extend(lista or [])
+    return [_normalizar_item(item).lower() for item in itens if _normalizar_item(item)]
+
+
+def _filtrar_itens_ja_documentados(itens):
+    """Evita repetir nas notas auto-geradas o que já consta em versões anteriores."""
+    documentados = _todos_itens_documentados()
+    filtrados = []
+    for item in itens or []:
+        texto = _normalizar_item(item)
+        if not texto:
+            continue
+        chave = texto.lower()
+        if any(chave in doc or doc in chave for doc in documentados):
+            continue
+        if "suporte" in chave and any("suporte" in doc for doc in documentados):
+            continue
+        filtrados.append(texto)
+    return filtrados
 
 
 def corpo_release(versao, notas_extras=None):
@@ -48,13 +78,7 @@ def corpo_release(versao, notas_extras=None):
 
 
 _ARQ_NOTAS = Path(__file__).resolve().parent / "release_notas.py"
-_MARCADOR_FIM_DICT = "\n}\n\n\ndef itens_versao"
-
-
-def _normalizar_item(item):
-    texto = str(item or "").strip()
-    texto = re.sub(r"\s+", " ", texto)
-    return texto
+_MARCADOR_FIM_DICT = "\n}\n\n\ndef _normalizar_item"
 
 
 def _filtrar_mensagens_git(mensagens):
@@ -133,6 +157,7 @@ def coletar_itens_git(versao_antiga, raiz=None):
         )
 
     itens = _filtrar_mensagens_git(mensagens)
+    itens = _filtrar_itens_ja_documentados(itens)
     if _executar_git(["status", "--porcelain"], pasta):
         resumo = _executar_git(["diff", "--stat", "--", "."], pasta)
         if resumo:
@@ -168,6 +193,7 @@ def preparar_notas_build(versao_antiga, versao_nova, raiz=None):
         return itens_versao(versao_nova)
 
     itens = coletar_itens_git(versao_antiga, raiz=arquivo.parent)
+    itens = _filtrar_itens_ja_documentados(itens)
     if not itens:
         itens = [f"Atualização V.{versao_nova}"]
 
